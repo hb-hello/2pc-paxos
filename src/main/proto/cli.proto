@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package org.example;
+
+option java_package = "org.example";
+option java_multiple_files = true;
+
+service CLIService {
+  rpc SetActiveFlag (ActiveFlag) returns (Acknowledgement) {};
+
+  rpc FailLeader(google.protobuf.Empty) returns (Acknowledgement);
+
+  rpc GetLog(google.protobuf.Empty) returns (CLIResponse) {};
+  rpc GetDB(google.protobuf.Empty) returns (CLIResponse) {};
+  rpc GetStatus(SequenceNumber) returns (CLIResponse) {};
+  rpc GetNewViews(google.protobuf.Empty) returns (CLIResponse) {};
+}
+
+message ActiveFlag {
+  bool active_flag = 1;
+}
+
+message Acknowledgement {
+  bool status = 1;
+}
+
+message SequenceNumber {
+  int64 sequence_number = 1;
+}
+
+message CLIResponse {
+  string cli_response = 1;
+}

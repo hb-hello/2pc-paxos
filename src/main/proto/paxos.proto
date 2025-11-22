@@ -1,0 +1,75 @@
+syntax="proto3";
+
+package org.example;
+
+import "google/protobuf/empty.proto";
+import "client.proto";
+
+option java_package = "org.example";
+option java_multiple_files = true;
+
+service PaxosService {
+  rpc Prepare (PrepareMessage) returns (PromiseMessage) {};
+  rpc Accept (AcceptMessage) returns (AcceptedMessage) {};
+  rpc NewView (NewViewMessage) returns (stream AcceptedMessage) {};
+  rpc Commit (CommitMessage) returns (google.protobuf.Empty) {};
+  rpc ForwardClientRequest (ClientRequest) returns (google.protobuf.Empty) {};
+  rpc Checkpoint (CheckpointMessage) returns (google.protobuf.Empty) {};
+}
+
+message Ballot {
+  int64 instance = 1;
+  string sender_id = 2;
+}
+
+// Prepare phase
+message PrepareMessage {
+  Ballot ballot = 1;
+}
+
+message PromiseMessage {
+  Ballot ballot = 1;
+  repeated AcceptMessage accept_log = 2;
+  string sender_id = 3;
+}
+
+// Accept phase
+message AcceptMessage {
+  Ballot ballot = 1;
+  int64 sequence_number = 2;
+  enum tpc_phase {
+    PREPARE = 0;
+    COMMIT = 1;
+    ABORT = 2;
+  }
+  ClientRequest request = 4;
+}
+
+message AcceptedMessage {
+  Ballot ballot = 1;
+  int64 sequence_number = 2;
+  ClientRequest request = 3;
+  string sender_id = 4;
+}
+
+message NewViewMessage {
+  Ballot ballot = 1;
+  repeated AcceptMessage accept_log = 2;
+}
+
+// Commit phase
+message CommitMessage {
+  Ballot ballot = 1;
+  int64 sequence_number = 2;
+  ClientRequest request = 3;
+}
+
+message CheckpointMessage {
+  int64 sequence_number = 1;
+  bytes state_digest = 2;
+}
+
+message StateMessage {
+  int64 sequence_number = 1;
+  string state = 2;
+}
