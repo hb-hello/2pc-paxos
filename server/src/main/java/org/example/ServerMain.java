@@ -1,9 +1,114 @@
 package org.example;
 
-//TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
-// click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.example.config.Config;
+import org.example.messaging.CLIServiceServer;
+import org.example.messaging.MessageReceiver;
+import org.example.messaging.ServerActivityInterceptor;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
 public class ServerMain {
+    private final int serverId;
+    private final Logger logger;
+
+    private final ExecutorManager executorManager;
+
+    private TPCServer server;
+    private final CLIServiceServer cliServiceServer;
+
+    private final MessageReceiver messageReceiver;
+
+    public ServerMain(int serverId) {
+        this.serverId = serverId;
+        // Initialize the instance logger here so Log4j has already been configured in main()
+        this.logger = LogManager.getLogger(ServerMain.class);
+        this.executorManager = new ExecutorManager(Config.getNodes().size() - 1);
+        this.cliServiceServer = new CLIServiceServer(this);
+        this.server = new TPCServer(serverId, cliServiceServer, executorManager);
+        this.messageReceiver = new MessageReceiver(serverId, Config.getNodePort(serverId), server.getServices(), new ServerActivityInterceptor());
+    }
+
+    @SuppressWarnings("unused")
+    public void reset() {
+        this.server = new TPCServer(serverId, cliServiceServer, executorManager);
+        logger.info("Server {} state has been reset.", serverId);
+    }
+
+    public void start() {
+        logger.info("Starting Server {}", serverId);
+        try {
+            executorManager.submitListeningTask(() -> messageReceiver.startListening(server::warmup));
+        } catch (Exception e) {
+            logger.error("Server {} encountered an error: {}", serverId, e.getMessage(), e);
+        }
+    }
+
+    public void shutdown() {
+        logger.info("Shutting down Server {}", serverId);
+        messageReceiver.shutdown();
+        executorManager.shutdown();
+    }
+
     public static void main(String[] args) {
         System.out.println("Hello, World!");
+
+        if (args.length != 1) {
+            System.err.println("Node ID argument required");
+            System.exit(1);
+        }
+
+        int sid = Integer.parseInt(args[0]);
+
+        // Compute a safe ISO-like timestamp for the log filename (no characters illegal on Windows)
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss.SSS"));
+        // Build a log path and expose it as a system property so Log4j can interpolate it without extra property indirection
+        String logPath = "logs/server-" + sid + "/log-" + timestamp + ".log";
+        System.setProperty("logPath", logPath);
+
+        // Ensure parent directories for the log file exist so the File appender can create the file
+        File parent = new File(logPath).getParentFile();
+        if (parent != null && !parent.exists()) {
+            try {
+                Files.createDirectories(parent.toPath());
+            } catch (IOException ioe) {
+                // Can't rely on Log4j being configured yet; print to stderr as a last resort
+                System.err.println("Failed to create log directory '" + parent.getAbsolutePath() + "': " + ioe.getMessage());
+            }
+        }
+
+        // Reconfigure Log4j context so it picks up the new system properties (logPath)
+        LoggerContext context = (LoggerContext) LogManager.getContext(false);
+        context.reconfigure();
+
+        // Now it's safe to create the ServerMain instance which in turn creates the instance logger
+        Logger tempLogger = LogManager.getLogger(ServerMain.class);
+        tempLogger.info("Starting ServerMain for server ID {}", sid);
+
+        Config.initialize();
+        ServerMain serverMain = new ServerMain(sid);
+        // Add a shutdown hook so shutdown() is called on JVM exit (SIGINT, SIGTERM, etc.)
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                serverMain.logger.info("Shutdown hook triggered - shutting down server");
+                serverMain.shutdown();
+            } catch (Exception e) {
+                // Best-effort shutdown logging; avoid throwing from shutdown hook
+                Logger hookLogger = LogManager.getLogger(ServerMain.class);
+                hookLogger.error("Error during shutdown hook: {}", e.getMessage(), e);
+            }
+        }));
+
+        serverMain.start();
     }
 }

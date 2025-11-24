@@ -16,6 +16,8 @@ service CLIService {
   rpc GetDB(google.protobuf.Empty) returns (CLIResponse) {};
   rpc GetStatus(SequenceNumber) returns (CLIResponse) {};
   rpc GetNewViews(google.protobuf.Empty) returns (CLIResponse) {};
+
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {};
 }
 
 message ActiveFlag {

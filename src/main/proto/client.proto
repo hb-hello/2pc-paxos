@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+import "google/protobuf/empty.proto";
+
 package org.example;
 
 option java_package = "org.example";
@@ -8,6 +10,8 @@ option java_multiple_files = true;
 // Service definition
 service ClientService {
   rpc Request(ClientRequest) returns (ClientReply);
+
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {};
 }
 
 // Core operation definitions

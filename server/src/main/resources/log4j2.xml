@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+  <Appenders>
+    <!-- Use the logPath system property set by ServerMain before Log4j reconfiguration.
+         Provide a safe fallback file name so Log4j never attempts to open the literal '${sys:logPath}'.
+         createOnDemand prevents an immediate failure if the file can't be created at configuration-time. -->
+    <File name="ServerFile" fileName="${sys:logPath:-logs/server-default.log}" append="true" createOnDemand="true">
+      <PatternLayout pattern="%d{ISO8601} [%t] %-5level %logger{36} - %msg%n"/>
+    </File>
+  </Appenders>
+
+  <Loggers>
+    <!-- Ensure org.example classes are explicitly logged to the server file -->
+    <Logger name="org.example" level="info" additivity="false">
+      <AppenderRef ref="ServerFile" />
+    </Logger>
+    <!-- Route everything to the file appender and disable console logging -->
+    <Root level="info">
+      <AppenderRef ref="ServerFile" />
+    </Root>
+  </Loggers>
+</Configuration>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+  <Appenders>
+    <!-- CLI logs go to a dedicated file; use fallback to avoid literal expansion issues -->
+    <File name="CliFile" fileName="${sys:cliLogPath:-logs/cli/log-default.log}" append="true" createOnDemand="true">
+      <PatternLayout pattern="%d{ISO8601} [%t] %-5level %logger{36} - %msg%n"/>
+    </File>
+  </Appenders>
+
+  <Loggers>
+    <Logger name="org.example" level="info" additivity="false">
+      <AppenderRef ref="CliFile" />
+    </Logger>
+
+    <Root level="info">
+      <AppenderRef ref="CliFile" />
+    </Root>
+  </Loggers>
+</Configuration>
+

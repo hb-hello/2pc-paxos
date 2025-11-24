@@ -1,0 +1,1693 @@
+# Directory Structure
+```
+cli module
+CliMain.java
+ServerManager.java
+messageing/
+    CLIMessageSender.java
+    CLIServiceClient.java
+
+proto files
+cli.proto
+paxos.proto
+client.proto
+
+common module
+example/
+  config/
+    Config.java
+    NodeDetails.java
+  Main.java
+  messaging/
+    StubManager.java
+    MessageSender.java
+    ChannelManager.java
+    MessageReceiver.java
+    ServerActivityInterceptor.java
+  ExecutorManager.java
+
+server module
+example/
+  messaging/
+    ClientService.java
+    CLIServiceServer.java
+    TPCMessageSender.java
+  TPCServer.java
+  ServerMain.java
+```
+
+# File Contents
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/cli/src/main/java/org/example/CliMain.java
+```java
+package org.example;
+
+import org.example.config.Config;
+import org.example.messaging.CLIMessageSender;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LoggerContext;
+
+import java.io.File;
+import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Scanner;
+import java.util.concurrent.Executors;
+
+public class CliMain {
+
+    public static void activateAllServers(CLIMessageSender cliMessageSender) {
+        try {
+            System.out.println("Waiting briefly before activating all servers for client warmup...");
+            Thread.sleep(500); // brief pause to ensure any prior operations have settled
+            for (int i = 1; i <= Config.getServerCount(); i++) {
+                try {
+                    cliMessageSender.sendActiveFlag(i, true);
+                } catch (Exception e) {
+                    System.out.println("Warning: failed to activate server " + i + " " + e.getMessage());
+                }
+            }
+//            System.out.println("Resetting all servers before client warmup...");
+            // Activate all known servers so clients can warm connections to all of them
+            System.out.println("Server reset/activation complete.");
+        } catch (Exception e) {
+            System.out.println("Warning: failed to reset/activate servers before warmup: " + e.getMessage());
+        }
+    }
+
+    public static void main(String[] args) {
+        // Initialize config first so we know settings if needed
+        Config.initialize();
+
+        // Set up a CLI-specific log file path BEFORE any class that uses LogManager is loaded.
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss.SSS"));
+        String cliLogPath = "logs/cli/log-" + timestamp + ".log";
+        System.setProperty("cliLogPath", cliLogPath);
+
+        // Ensure parent directory exists
+        File parent = new File(cliLogPath).getParentFile();
+        if (parent != null && !parent.exists()) {
+            try {
+                java.nio.file.Files.createDirectories(parent.toPath());
+            } catch (IOException ioe) {
+                System.err.println("Failed to create CLI log directory '" + parent.getAbsolutePath() + "': " + ioe.getMessage());
+            }
+        }
+
+        // Reconfigure Log4j2 to pick up the CLI log path before any static loggers are initialized
+        LoggerContext context = (LoggerContext) LogManager.getContext(false);
+        context.reconfigure();
+
+        try {
+            ServerManager.startAllServers(Config.getServerExecutablePath(), Config.getServerCount());
+
+            // this calls the warmup action
+
+            CLIMessageSender cliMessageSender = new CLIMessageSender(0, Executors.newSingleThreadExecutor());
+
+            try {
+                Thread.sleep(1000); // wait a bit for processes to start
+
+                //potentially start receiver server
+                Thread.sleep(1000); // wait a bit for GRPC servers to start
+                cliMessageSender.warmup();
+
+                activateAllServers(cliMessageSender);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+        int next = 0;
+        Scanner sc = new Scanner(System.in);
+
+        while (true) {
+            System.out.println();
+            System.out.println("Options:");
+            System.out.println(" 1 - PrintDB");
+            System.out.println(" 2 - PrintLog");
+            System.out.println(" 3 - PrintStatus");
+            System.out.println(" 4 - PrintView");
+            System.out.println(" 5 - Continue with next set (#" + (next + 1) + ")");
+            System.out.println(" 6 - DEBUG: PrintOperationLog");
+            System.out.println(" 7 - DEBUG: Pause/Resume client (pause a client to inspect logs/db)");
+            System.out.println(" 8 - DEBUG: Choose next set number");
+            System.out.println(" 0 - Exit");
+            System.out.print("Choice: ");
+            String choice = sc.nextLine().trim();
+
+            switch (choice) {
+                case "1" -> System.out.println("Printing DB contents from all servers:");
+                case "0" -> {
+                    System.out.println("Exiting...");
+                    return;
+                }
+                default -> System.out.println("Unknown choice.");
+            }
+        }
+    }
+}
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/cli/src/main/java/org/example/ServerManager.java
+```java
+package org.example;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+public class ServerManager {
+    private static final List<Process> processes = new ArrayList<>();
+
+    public static void startAllServers(String jarPath, int numServers) throws IOException {
+        for (int i = 1; i <= numServers; i++) {
+            // Include the protobuf JVM compatibility flag and the add-opens option when launching child JVMs
+            ProcessBuilder pb = new ProcessBuilder(
+                    "java",
+                    "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+                    "-Dcom.google.protobuf.use_unsafe_pre22_gencode=true",
+                    "-jar",
+                    jarPath,
+                    String.valueOf(i)
+            );
+            pb.inheritIO();
+            Process process = pb.start();
+            processes.add(process);
+            System.out.println("Started server " + i);
+        }
+
+        // Register shutdown hook to ensure launched server processes are terminated on JVM exit
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                shutdownAllServers();
+            } catch (Exception e) {
+                System.err.println("Error shutting down servers in shutdown hook: " + e.getMessage());
+            }
+        }));
+    }
+
+    public static void shutdownAllServers() {
+        for (int i = 0; i < processes.size(); i++) {
+            Process process = processes.get(i);
+            if (process.isAlive()) {
+                process.destroy();
+                System.out.println("Shut down server " + (i + 1));
+            }
+        }
+        processes.clear();
+    }
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/cli/src/main/java/org/example/messaging/CLIMessageSender.java
+```java
+package org.example.messaging;
+
+import com.google.common.util.concurrent.ListenableFuture;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.*;
+
+import java.util.concurrent.ExecutorService;
+
+public class CLIMessageSender extends MessageSender {
+    private static final Logger logger = LogManager.getLogger(CLIMessageSender.class);
+
+    private final ExecutorService networkExecutor;
+
+    public CLIMessageSender(int clientId, ExecutorService networkExecutor) {
+        super(clientId, networkExecutor);
+        this.networkExecutor = networkExecutor;
+    }
+
+    public void sendClientRequest(int targetServerId, ClientRequest request) {
+        ensureActive();
+        ClientServiceGrpc.ClientServiceFutureStub stub = stubManager.getClientStub(targetServerId);
+        ListenableFuture<ClientReply> replyFuture  = stub.request(request);
+        replyFuture.addListener(() -> {
+            try {
+                ClientReply reply = replyFuture.get();
+                logger.info("Received reply from server {}: {}", targetServerId, reply);
+            } catch (Exception e) {
+                logger.error("Failed to get reply from server {}", targetServerId, e);
+            }
+        }, networkExecutor);
+    }
+
+    public void sendActiveFlag(int targetServerId, boolean isActive) {
+        ensureActive();
+        CLIServiceGrpc.CLIServiceBlockingStub stub = stubManager.getCLIBlockingStub(targetServerId);
+        ActiveFlag activeFlag = ActiveFlag.newBuilder()
+                .setActiveFlag(isActive)
+                .build();
+        Acknowledgement ack = stub.setActiveFlag(activeFlag);
+        if (ack.getStatus()) {
+            logger.info("Server {} acknowledged active flag {}", targetServerId, isActive);
+        } else {
+            throw new RuntimeException("Server " + targetServerId + " did not acknowledge active flag " + isActive);
+        }
+    }
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/cli/src/main/java/org/example/messaging/CLIServiceClient.java
+```java
+package org.example.messaging;
+
+import com.google.protobuf.Empty;
+import io.grpc.stub.StreamObserver;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.CLIServiceGrpc;
+
+public class CLIServiceClient extends CLIServiceGrpc.CLIServiceImplBase {
+    private static final Logger logger = LogManager.getLogger(CLIServiceClient.class);
+
+    @Override
+    public void ping(Empty request, StreamObserver<Empty> responseObserver) {
+        logger.debug("Received ping request");
+        responseObserver.onNext(Empty.newBuilder().build());
+        responseObserver.onCompleted();
+    }
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/src/main/proto/cli.proto
+```protobuf
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package org.example;
+
+option java_package = "org.example";
+option java_multiple_files = true;
+
+service CLIService {
+  rpc SetActiveFlag (ActiveFlag) returns (Acknowledgement) {};
+
+  rpc FailLeader(google.protobuf.Empty) returns (Acknowledgement);
+
+  rpc GetLog(google.protobuf.Empty) returns (CLIResponse) {};
+  rpc GetDB(google.protobuf.Empty) returns (CLIResponse) {};
+  rpc GetStatus(SequenceNumber) returns (CLIResponse) {};
+  rpc GetNewViews(google.protobuf.Empty) returns (CLIResponse) {};
+
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {};
+}
+
+message ActiveFlag {
+  bool active_flag = 1;
+}
+
+message Acknowledgement {
+  bool status = 1;
+}
+
+message SequenceNumber {
+  int64 sequence_number = 1;
+}
+
+message CLIResponse {
+  string cli_response = 1;
+}
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/src/main/proto/paxos.proto
+```protobuf
+syntax="proto3";
+
+package org.example;
+
+import "google/protobuf/empty.proto";
+import "client.proto";
+
+option java_package = "org.example";
+option java_multiple_files = true;
+
+service PaxosService {
+  rpc Prepare (PrepareMessage) returns (PromiseMessage) {};
+  rpc Accept (AcceptMessage) returns (AcceptedMessage) {};
+  rpc NewView (NewViewMessage) returns (stream AcceptedMessage) {};
+  rpc Commit (CommitMessage) returns (google.protobuf.Empty) {};
+  rpc ForwardClientRequest (ClientRequest) returns (google.protobuf.Empty) {};
+  rpc Checkpoint (CheckpointMessage) returns (google.protobuf.Empty) {};
+
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {};
+}
+
+message Ballot {
+  int64 instance = 1;
+  string sender_id = 2;
+}
+
+// Prepare phase
+message PrepareMessage {
+  Ballot ballot = 1;
+}
+
+message PromiseMessage {
+  Ballot ballot = 1;
+  repeated AcceptMessage accept_log = 2;
+  string sender_id = 3;
+}
+
+// Accept phase
+message AcceptMessage {
+  Ballot ballot = 1;
+  int64 sequence_number = 2;
+  enum tpc_phase {
+    PREPARE = 0;
+    COMMIT = 1;
+    ABORT = 2;
+  }
+  ClientRequest request = 4;
+}
+
+message AcceptedMessage {
+  Ballot ballot = 1;
+  int64 sequence_number = 2;
+  ClientRequest request = 3;
+  string sender_id = 4;
+}
+
+message NewViewMessage {
+  Ballot ballot = 1;
+  repeated AcceptMessage accept_log = 2;
+}
+
+// Commit phase
+message CommitMessage {
+  Ballot ballot = 1;
+  int64 sequence_number = 2;
+  ClientRequest request = 3;
+}
+
+message CheckpointMessage {
+  int64 sequence_number = 1;
+  bytes state_digest = 2;
+}
+
+message StateMessage {
+  int64 sequence_number = 1;
+  string state = 2;
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/src/main/proto/client.proto
+```protobuf
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package org.example;
+
+option java_package = "org.example";
+option java_multiple_files = true;
+
+// Service definition
+service ClientService {
+  rpc Request(ClientRequest) returns (ClientReply);
+
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {};
+}
+
+// Core operation definitions
+message Transfer {
+  string sender = 1;
+  string receiver = 2;
+  double amount = 3;
+}
+
+message BalanceRequest {
+  string account_id = 1;
+}
+
+message Operation {
+  oneof op {
+    Transfer transfer = 1;
+    BalanceRequest balance_request = 2;
+  }
+}
+
+message OperationResult {
+  oneof result {
+    bool success = 1;
+    double balance = 2;
+  }
+}
+
+// Client-Server communication
+message ClientRequest {
+  int64 timestamp = 1;
+  Operation operation = 2;
+  string client_id = 3;
+}
+
+message ClientReply {
+  string sender_id = 1;
+  int64 timestamp = 2;
+  string client_id = 3;
+  OperationResult result = 4;
+
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/config/Config.java
+```java
+package org.example.config;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Properties;
+
+public class Config {
+    private static final Logger logger = LogManager.getLogger(Config.class);
+
+    private static boolean initialized = false;
+
+    // Static configuration fields (loaded in initialize)
+    private static String transactionsSetsPath;
+    private static int serverClusterCount;
+    private static int serverClusterSize;
+    private static int serverPortStart;
+    private static int clientPort;
+    private static int clientTimeoutMillis;
+    private static int serverTimeoutMillis;
+    private static int checkpointInterval;
+    private static int databaseSize;
+    private static String serverExecutablePath;
+
+    // Map of server id -> NodeDetails (in insertion order)
+    private static final Map<Integer, NodeDetails> nodes = new LinkedHashMap<>();
+
+    // Private constructor to prevent instantiation
+    private Config() {
+        throw new UnsupportedOperationException("Config is a utility class and cannot be instantiated");
+    }
+
+    private static void ensureInitialized() {
+        if (!initialized) {
+            throw new IllegalStateException("Config has not been initialized. Call Config.initialize() first.");
+        }
+    }
+
+    /**
+     * Initialize configuration from the provided Properties object.
+     * Generates server ids 1, 2, 3 ... and assigns sequential ports starting from server.port.start.
+     * Also inserts a client node at id 0 with host 'localhost' and configured client port.
+     */
+    public static synchronized void initialize(Properties props) {
+        if (props == null) {
+            throw new IllegalArgumentException("props must not be null");
+        }
+        if (initialized) {
+            logger.warn("Config.initialize called but Config is already initialized; call will be ignored.");
+            return;
+        }
+
+        // Helper to parse integer properties with defaults
+        java.util.function.BiFunction<String, Integer, Integer> parseIntOrDefault = (key, def) -> {
+            String v = props.getProperty(key);
+            if (v == null || v.isBlank()) return def;
+            try {
+                return Integer.parseInt(v.trim());
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid integer for property {}, using default {}: {}", key, def, e.getMessage());
+                return def;
+            }
+        };
+
+        // Defaults matching the provided config.properties
+        transactionsSetsPath = props.getProperty("transactions.sets.path", "src/main/resources/transactionSets.csv");
+        serverClusterCount = parseIntOrDefault.apply("server.cluster.count", 3);
+        serverClusterSize = parseIntOrDefault.apply("server.cluster.size", 3);
+        serverPortStart = parseIntOrDefault.apply("server.port.start", 3000);
+        clientPort = parseIntOrDefault.apply("client.port", 4000);
+        clientTimeoutMillis = parseIntOrDefault.apply("client.timeout.millis", 2000);
+        serverTimeoutMillis = parseIntOrDefault.apply("server.timeout.millis", 1000);
+        checkpointInterval = parseIntOrDefault.apply("checkpoint.interval", 100);
+        databaseSize = parseIntOrDefault.apply("database.size", 9000);
+        serverExecutablePath = props.getProperty("server.executable.path", "server/target/server-1.0-SNAPSHOT-jar-with-dependencies.jar");
+
+        // Build nodes map: first insert client at id 0, then server ids 1..N with ports sequential from serverPortStart
+        nodes.clear();
+        String clientHost = "localhost";
+        nodes.put(0, new NodeDetails(0, clientHost, clientPort));
+
+        int totalServers = Math.max(0, serverClusterCount * serverClusterSize);
+        for (int i = 1; i <= totalServers; i++) {
+            String host = "localhost";
+            int port = serverPortStart + (i - 1);
+            nodes.put(i, new NodeDetails(i, host, port));
+        }
+
+        initialized = true;
+        logger.info("Config initialized: {} servers configured (including client at 0), transactions path: {}, database.size={}, server.executable.path={}", nodes.size(), transactionsSetsPath, databaseSize, serverExecutablePath);
+    }
+
+    /**
+     * Convenience overload to load properties from a file path using existing loader.
+     */
+    public static void initialize(String filePath) {
+        Properties props = loadProperties(filePath);
+        initialize(props);
+    }
+
+    public static void initialize() {
+        initialize("config.properties");
+    }
+
+    // Accessors (ensure initialized)
+    public static String getTransactionsSetsPath() {
+        ensureInitialized();
+        return transactionsSetsPath;
+    }
+
+    public static int getServerClusterCount() {
+        ensureInitialized();
+        return serverClusterCount;
+    }
+
+    public static int getServerClusterSize() {
+        ensureInitialized();
+        return serverClusterSize;
+    }
+
+    public static int getServerPortStart() {
+        ensureInitialized();
+        return serverPortStart;
+    }
+
+    public static int getClientPort() {
+        ensureInitialized();
+        return clientPort;
+    }
+
+    public static int getClientTimeoutMillis() {
+        ensureInitialized();
+        return clientTimeoutMillis;
+    }
+
+    public static int getServerTimeoutMillis() {
+        ensureInitialized();
+        return serverTimeoutMillis;
+    }
+
+    public static int getCheckpointInterval() {
+        ensureInitialized();
+        return checkpointInterval;
+    }
+
+    public static int getDatabaseSize() {
+        ensureInitialized();
+        return databaseSize;
+    }
+
+    public static String getServerExecutablePath() {
+        ensureInitialized();
+        return serverExecutablePath;
+    }
+
+    public static Map<Integer, NodeDetails> getNodes() {
+        ensureInitialized();
+        return Collections.unmodifiableMap(nodes);
+    }
+
+    public static Map<Integer, NodeDetails> getNodesExcept(int excludeId) {
+        ensureInitialized();
+        Map<Integer, NodeDetails> filtered = new LinkedHashMap<>(nodes);
+        filtered.remove(excludeId);
+        return Collections.unmodifiableMap(filtered);
+    }
+
+    public static int getNodePort(int id) {
+        ensureInitialized();
+        NodeDetails node = nodes.get(id);
+        if (node == null) {
+            throw new IllegalArgumentException("No node found with id: " + id);
+        }
+        return node.port();
+    }
+
+    public static Map<Integer, NodeDetails> getServers() {
+        ensureInitialized();
+        Map<Integer, NodeDetails> servers = new LinkedHashMap<>(nodes);
+        servers.remove(0); // Remove client node
+        return Collections.unmodifiableMap(servers);
+    }
+
+    public static NodeDetails getServerDetails(int id) {
+        ensureInitialized();
+        return nodes.get(id);
+    }
+
+    public static int getServerCount() {
+        ensureInitialized();
+        return nodes.size() - 1;
+    }
+
+    /**
+     * Load properties from file
+     */
+    private static Properties loadProperties(String filePath) {
+        Properties props = new Properties();
+
+        // Try loading from file system first
+        try (InputStream input = new FileInputStream(filePath)) {
+            props.load(input);
+            logger.info("Successfully loaded properties file from: {}", filePath);
+        } catch (IOException e) {
+            logger.warn("Could not load properties file from {}, trying classpath: {}", filePath, e.getMessage());
+
+            // Try loading from classpath as fallback
+            try (InputStream input = Config.class.getClassLoader().getResourceAsStream(filePath)) {
+                if (input != null) {
+                    props.load(input);
+                    logger.info("Successfully loaded properties file from classpath: {}", filePath);
+                } else {
+                    logger.warn("Properties file not found in classpath, using default values");
+                }
+            } catch (IOException ex) {
+                logger.warn("Could not load properties file from classpath, using default values: {}", ex.getMessage());
+            }
+        }
+
+        return props;
+    }
+}
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/config/NodeDetails.java
+```java
+package org.example.config;
+
+public record NodeDetails(int id, String host, int port) {
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/Main.java
+```java
+package org.example;
+
+//TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
+// click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
+public class Main {
+    public static void main(String[] args) {
+        //TIP Press <shortcut actionId="ShowIntentionActions"/> with your caret at the highlighted text
+        // to see how IntelliJ IDEA suggests fixing it.
+        System.out.printf("Hello and welcome!");
+
+        for (int i = 1; i <= 5; i++) {
+            //TIP Press <shortcut actionId="Debug"/> to start debugging your code. We have set one <icon src="AllIcons.Debugger.Db_set_breakpoint"/> breakpoint
+            // for you, but you can always add more by pressing <shortcut actionId="ToggleLineBreakpoint"/>.
+            System.out.println("i = " + i);
+        }
+    }
+}
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/StubManager.java
+```java
+package org.example.messaging;
+
+import org.example.CLIServiceGrpc;
+import org.example.PaxosServiceGrpc;
+import org.example.ClientServiceGrpc;
+import io.grpc.ManagedChannel;
+import com.google.protobuf.Empty;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.TimeUnit; // ...added import for deadlines
+
+public class StubManager {
+    private static final Logger logger = LogManager.getLogger(StubManager.class);
+    private static volatile ChannelManager channelManager; // As already designed, keyed by Integer nodeId
+    private static final int POOL_SIZE = 4;
+
+    private final int serverIdToExclude;
+    private final ExecutorService networkExecutor;
+
+    // For each node, keep a pool of stubs for each service
+    private static final Map<Integer, CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceFutureStub>> cliStubs = new ConcurrentHashMap<>();
+    private static final Map<Integer, CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceFutureStub>> paxosStubs = new ConcurrentHashMap<>();
+    private static final Map<Integer, CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceFutureStub>> clientStubs = new ConcurrentHashMap<>();
+
+    // Blocking stub pools for each service
+    private static final Map<Integer, CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceBlockingStub>> cliBlockingStubs = new ConcurrentHashMap<>();
+    private static final Map<Integer, CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceBlockingStub>> paxosBlockingStubs = new ConcurrentHashMap<>();
+    private static final Map<Integer, CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceBlockingStub>> clientBlockingStubs = new ConcurrentHashMap<>();
+
+    public StubManager(int serverIdToExclude, ExecutorService networkExecutor) {
+        this.serverIdToExclude = serverIdToExclude;
+        this.networkExecutor = networkExecutor;
+        initChannelManager();
+        preCreateStubs();
+    }
+
+    //too many pings?
+
+    private synchronized void initChannelManager() {
+        if (channelManager == null)
+            channelManager = new ChannelManager(POOL_SIZE, this.serverIdToExclude);
+    }
+
+    private void preCreateStubs() {
+        for (Integer nodeId : channelManager.getNodes().keySet()) {
+            CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceFutureStub> cliStubPool = new CopyOnWriteArrayList<>();
+            CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceFutureStub> paxosStubPool = new CopyOnWriteArrayList<>();
+            CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceFutureStub> clientStubPool = new CopyOnWriteArrayList<>();
+
+            CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceBlockingStub> cliBlockingPool = new CopyOnWriteArrayList<>();
+            CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceBlockingStub> paxosBlockingPool = new CopyOnWriteArrayList<>();
+            CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceBlockingStub> clientBlockingPool = new CopyOnWriteArrayList<>();
+
+            for (int i = 0; i < channelManager.getPoolSize(); i++) {
+                ManagedChannel channel = channelManager.getChannelPools().get(nodeId).get(i);
+                cliStubPool.add(CLIServiceGrpc.newFutureStub(channel));
+                paxosStubPool.add(PaxosServiceGrpc.newFutureStub(channel));
+                clientStubPool.add(ClientServiceGrpc.newFutureStub(channel));
+
+                // create blocking stubs as well
+                cliBlockingPool.add(CLIServiceGrpc.newBlockingStub(channel));
+                paxosBlockingPool.add(PaxosServiceGrpc.newBlockingStub(channel));
+                clientBlockingPool.add(ClientServiceGrpc.newBlockingStub(channel));
+            }
+            cliStubs.put(nodeId, cliStubPool);
+            paxosStubs.put(nodeId, paxosStubPool);
+            clientStubs.put(nodeId, clientStubPool);
+
+            cliBlockingStubs.put(nodeId, cliBlockingPool);
+            paxosBlockingStubs.put(nodeId, paxosBlockingPool);
+            clientBlockingStubs.put(nodeId, clientBlockingPool);
+        }
+    }
+
+    public CLIServiceGrpc.CLIServiceFutureStub getCLIStub(int nodeId) {
+        if (channelManager == null)
+            throw new IllegalStateException("ChannelManager not initialized");
+
+        CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceFutureStub> pool = cliStubs.get(nodeId);
+        if (pool == null || pool.isEmpty())
+            throw new IllegalStateException("No CLI stub pool available for node " + nodeId);
+
+        AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
+        if (rr == null)
+            throw new IllegalStateException("No round-robin index for node " + nodeId);
+
+        int idx = Math.abs(rr.getAndIncrement() % channelManager.getPoolSize());
+        return pool.get(idx);
+    }
+    public PaxosServiceGrpc.PaxosServiceFutureStub getPaxosStub(int nodeId) {
+        if (channelManager == null)
+            throw new IllegalStateException("ChannelManager not initialized");
+
+        CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceFutureStub> pool = paxosStubs.get(nodeId);
+        if (pool == null || pool.isEmpty())
+            throw new IllegalStateException("No Paxos stub pool available for node " + nodeId);
+
+        AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
+        if (rr == null)
+            throw new IllegalStateException("No round-robin index for node " + nodeId);
+
+        int idx = Math.abs(rr.getAndIncrement() % channelManager.getPoolSize());
+        return pool.get(idx);
+    }
+    public ClientServiceGrpc.ClientServiceFutureStub getClientStub(int nodeId) {
+        if (channelManager == null)
+            throw new IllegalStateException("ChannelManager not initialized");
+
+        CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceFutureStub> pool = clientStubs.get(nodeId);
+        if (pool == null || pool.isEmpty())
+            throw new IllegalStateException("No Client stub pool available for node " + nodeId);
+
+        AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
+        if (rr == null)
+            throw new IllegalStateException("No round-robin index for node " + nodeId);
+
+        int idx = Math.abs(rr.getAndIncrement() % channelManager.getPoolSize());
+        return pool.get(idx);
+    }
+
+    // Blocking stub accessors
+    public CLIServiceGrpc.CLIServiceBlockingStub getCLIBlockingStub(int nodeId) {
+        if (channelManager == null)
+            throw new IllegalStateException("ChannelManager not initialized");
+
+        CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceBlockingStub> pool = cliBlockingStubs.get(nodeId);
+        if (pool == null || pool.isEmpty())
+            throw new IllegalStateException("No CLI blocking stub pool available for node " + nodeId);
+
+        AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
+        if (rr == null)
+            throw new IllegalStateException("No round-robin index for node " + nodeId);
+
+        int idx = Math.abs(rr.getAndIncrement() % channelManager.getPoolSize());
+        return pool.get(idx);
+    }
+
+    public PaxosServiceGrpc.PaxosServiceBlockingStub getPaxosBlockingStub(int nodeId) {
+        if (channelManager == null)
+            throw new IllegalStateException("ChannelManager not initialized");
+
+        CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceBlockingStub> pool = paxosBlockingStubs.get(nodeId);
+        if (pool == null || pool.isEmpty())
+            throw new IllegalStateException("No Paxos blocking stub pool available for node " + nodeId);
+
+        AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
+        if (rr == null)
+            throw new IllegalStateException("No round-robin index for node " + nodeId);
+
+        int idx = Math.abs(rr.getAndIncrement() % channelManager.getPoolSize());
+        return pool.get(idx);
+    }
+
+    public ClientServiceGrpc.ClientServiceBlockingStub getClientBlockingStub(int nodeId) {
+        if (channelManager == null)
+            throw new IllegalStateException("ChannelManager not initialized");
+
+        CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceBlockingStub> pool = clientBlockingStubs.get(nodeId);
+        if (pool == null || pool.isEmpty())
+            throw new IllegalStateException("No Client blocking stub pool available for node " + nodeId);
+
+        AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
+        if (rr == null)
+            throw new IllegalStateException("No round-robin index for node " + nodeId);
+
+        int idx = Math.abs(rr.getAndIncrement() % channelManager.getPoolSize());
+        return pool.get(idx);
+    }
+
+    public void warmup() {
+        if (channelManager == null)
+            throw new IllegalStateException("ChannelManager not initialized");
+
+        // We'll perform synchronous, short-deadline pings one-by-one to avoid flooding servers with PINGs.
+        final long PER_CALL_DEADLINE_SECONDS = 2;
+        final long PAUSE_BETWEEN_PINGS_MS = 5; // larger pause between pings to avoid bursts
+        final long PAUSE_BETWEEN_NODES_MS = 10; // small pause after finishing a node's pool
+
+        for (Integer nodeId : channelManager.getNodes().keySet()) {
+            // Warm up all CLI blocking stubs for this node
+            CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceBlockingStub> cliPool = cliBlockingStubs.get(nodeId);
+            if (cliPool != null) {
+                for (CLIServiceGrpc.CLIServiceBlockingStub stub : cliPool) {
+                    try {
+                        stub.withDeadlineAfter(PER_CALL_DEADLINE_SECONDS, TimeUnit.SECONDS)
+                                .ping(Empty.getDefaultInstance());
+                        logger.debug("Warmup CLI ping successful to node {}", nodeId);
+                    } catch (Exception e) {
+                        logger.warn("Warmup ping to node {} CLI stub failed: {}", nodeId, e.getMessage());
+                    }
+                    try {
+                        Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+
+            // Warm up all Paxos blocking stubs for this node
+            CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceBlockingStub> paxosPool = paxosBlockingStubs.get(nodeId);
+            if (paxosPool != null) {
+                for (PaxosServiceGrpc.PaxosServiceBlockingStub stub : paxosPool) {
+                    try {
+                        stub.withDeadlineAfter(PER_CALL_DEADLINE_SECONDS, TimeUnit.SECONDS)
+                                .ping(Empty.getDefaultInstance());
+                        logger.debug("Warmup Paxos ping successful to node {}", nodeId);
+                    } catch (Exception e) {
+                        logger.warn("Warmup ping to node {} Paxos stub failed: {}", nodeId, e.getMessage());
+                    }
+                    try {
+                        Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+
+            // Warm up all Client blocking stubs for this node
+            CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceBlockingStub> clientPool = clientBlockingStubs.get(nodeId);
+            if (clientPool != null) {
+                for (ClientServiceGrpc.ClientServiceBlockingStub stub : clientPool) {
+                    try {
+                        stub.withDeadlineAfter(PER_CALL_DEADLINE_SECONDS, TimeUnit.SECONDS)
+                                .ping(Empty.getDefaultInstance());
+                        logger.debug("Warmup Client ping successful to node {}", nodeId);
+                    } catch (Exception e) {
+                        logger.warn("Warmup ping to node {} Client stub failed: {}", nodeId, e.getMessage());
+                    }
+                    try {
+                        Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+
+            // Small pause after finishing a node to spread traffic across time
+            try {
+                Thread.sleep(PAUSE_BETWEEN_NODES_MS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    // Add future/async stub pools and accessors as needed
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/MessageSender.java
+```java
+package org.example.messaging;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+public class MessageSender {
+
+    private static final Logger logger = LogManager.getLogger(MessageSender.class);
+
+    protected final int nodeId;
+    private boolean isPrimaryServer;
+    protected final StubManager stubManager;
+    private final AtomicBoolean active;
+
+    private final ExecutorService networkExecutor;
+
+    public MessageSender(int nodeId, ExecutorService networkExecutor) {
+        this.nodeId = nodeId;
+        this.networkExecutor = networkExecutor;
+        this.stubManager = new StubManager(nodeId, networkExecutor);
+        this.active = new AtomicBoolean(true);
+    }
+
+    public void setActive(boolean active) {
+        this.active.set(active);
+    }
+
+    public boolean isActive() {
+        return active.get();
+    }
+
+    public void ensureActive() {
+        if (!isActive()) {
+            logger.warn("Node {} is inactive. Cannot send messages.", nodeId);
+            throw new IllegalStateException("Node is inactive. Cannot send messages.");
+        }
+    }
+
+    public void warmup() {
+        logger.info("Waiting for everyone to start up...");
+        try {
+            Thread.sleep(100);
+            stubManager.warmup();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+}
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/ChannelManager.java
+```java
+package org.example.messaging;
+
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.config.Config;
+import org.example.config.NodeDetails;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class ChannelManager {
+
+    private static final Logger logger = LogManager.getLogger(ChannelManager.class);
+    private final Map<Integer, CopyOnWriteArrayList<ManagedChannel>> channelPools;
+    private final Map<Integer, NodeDetails> nodes;
+    private final int poolSize;
+    private final Map<Integer, AtomicInteger> roundRobinIndexes;
+
+    public ChannelManager(int poolSize) {
+        this.poolSize = poolSize;
+        this.channelPools = new ConcurrentHashMap<>();
+        this.roundRobinIndexes = new ConcurrentHashMap<>();
+        this.nodes = Config.getNodes();
+        for (Integer nodeId : nodes.keySet()) {
+            createChannelPool(nodeId);
+        }
+    }
+
+    public ChannelManager(int poolSize, int excludeNodeId) {
+        this.poolSize = poolSize;
+        this.channelPools = new ConcurrentHashMap<>();
+        this.roundRobinIndexes = new ConcurrentHashMap<>();
+        this.nodes = Config.getNodesExcept(excludeNodeId);
+        for (Integer nodeId : nodes.keySet()) {
+            if (!nodeId.equals(excludeNodeId)) {
+                createChannelPool(nodeId);
+            }
+        }
+    }
+
+    private void createChannelPool(Integer nodeId) {
+        if (!nodes.containsKey(nodeId)) {
+            logger.error("Node ID {} not found in configuration while creating GRPC channel.", nodeId);
+            throw new RuntimeException();
+        }
+        NodeDetails node = nodes.get(nodeId);
+        CopyOnWriteArrayList<ManagedChannel> pool = new CopyOnWriteArrayList<>();
+        for (int i = 0; i < poolSize; i++) {
+            ManagedChannel channel = ManagedChannelBuilder
+                    .forAddress(node.host(), node.port())
+                    .usePlaintext()
+                    // Reduce aggressive keepalive pings which can trigger ENHANCE_YOUR_CALM on servers.
+                    // Increase keepAliveTime to 5 minutes and disable keepAliveWithoutCalls so pings are sent
+                    // only when there are active calls. This prevents "too_many_pings" when many channels exist.
+                    .keepAliveTime(300, java.util.concurrent.TimeUnit.SECONDS)
+                    .keepAliveTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+                    .keepAliveWithoutCalls(false)
+                    .build();
+            pool.add(channel);
+        }
+        channelPools.put(nodeId, pool);
+        roundRobinIndexes.put(nodeId, new AtomicInteger(0));
+        logger.debug("Initialized pool of {} GRPC channels to node {} at {}:{} (keepAliveTime={}s, keepAliveWithoutCalls={})",
+                poolSize, nodeId, node.host(), node.port(), 300, false);
+    }
+
+    public ManagedChannel getChannel(Integer nodeId) {
+        CopyOnWriteArrayList<ManagedChannel> pool = channelPools.get(nodeId);
+        if (pool == null || pool.isEmpty()) {
+            logger.error("Channel pool for Node ID {} not found.", nodeId);
+            throw new RuntimeException();
+        }
+        AtomicInteger idx = roundRobinIndexes.get(nodeId);
+        int i = Math.abs(idx.getAndIncrement() % poolSize);
+        return pool.get(i);
+    }
+
+    public Map<Integer, NodeDetails> getNodes() {
+        return nodes;
+    }
+
+    public Map<Integer, CopyOnWriteArrayList<ManagedChannel>> getChannelPools() {
+        return channelPools;
+    }
+
+    public int getPoolSize() {
+        return poolSize;
+    }
+
+    public Map<Integer, AtomicInteger> getRoundRobinIndexes() {
+        return roundRobinIndexes;
+    }
+
+    public void shutdownChannels() {
+        for (CopyOnWriteArrayList<ManagedChannel> pool : channelPools.values()) {
+            for (ManagedChannel channel : pool) {
+                if (channel != null && !channel.isShutdown()) {
+                    channel.shutdown();
+                }
+            }
+        }
+        logger.info("All GRPC channels have been shut down.");
+    }
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/MessageReceiver.java
+```java
+package org.example.messaging;
+
+import io.grpc.BindableService;
+import io.grpc.Server;
+import io.grpc.ServerBuilder;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+public class MessageReceiver {
+
+    private static final Logger logger = LogManager.getLogger(MessageReceiver.class);
+
+    private final int nodeId;
+    private final int port;
+    private final Server grpcServer;
+    private final ServerActivityInterceptor interceptor;
+
+    // Constructor accepting multiple services and an interceptor
+    public MessageReceiver(int nodeId, int port,
+                              List<BindableService> services, ServerActivityInterceptor interceptor) {
+        this.nodeId = nodeId;
+        this.port = port;
+        this.interceptor = interceptor;
+        ServerBuilder<?> builder = ServerBuilder.forPort(port);
+        if (services != null) {
+        logger.info("Adding {} services to GRPC server for node {}", services.size(), nodeId);
+            for (BindableService svc : services) {
+                builder.addService(svc);
+            }
+        }
+        if (interceptor != null) {
+            builder.intercept(interceptor);
+        }
+        this.grpcServer = builder.build();
+        logger.info("GRPC server for node {} initialized on port {}", nodeId, port);
+    }
+
+    // Overloaded constructor without interceptor parameter
+    public MessageReceiver(int nodeId, int port,
+                              List<BindableService> services) {
+        this.nodeId = nodeId;
+        this.port = port;
+        this.interceptor = null;
+
+        ServerBuilder<?> builder = ServerBuilder.forPort(port);
+        if (services != null) {
+            for (BindableService svc : services) {
+                builder.addService(svc);
+            }
+        }
+        this.grpcServer = builder.build();
+    }
+
+    public void setActive(boolean active) {
+        if (interceptor != null) {
+            interceptor.setActiveFlag(active);
+        }
+    }
+
+    public void startListening(Runnable onStartCallback) {
+        try {
+            grpcServer.start();
+            logger.info("GRPC Server for node {} started listening on port {}",
+                    nodeId, port);
+            if (onStartCallback != null) {
+                onStartCallback.run();
+            }
+            grpcServer.awaitTermination();
+        } catch (IOException e) {
+            logger.error("Node {}: Error in starting GRPC server : {}", nodeId, e.getMessage());
+            throw new RuntimeException(e);
+        } catch (InterruptedException e) {
+            logger.error("Node {}: GRPC server interrupted : {}", nodeId, e.getMessage());
+            logger.info("GRPC server was shut down.");
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void shutdown() {
+        grpcServer.shutdown();
+        try {
+            if (!grpcServer.awaitTermination(5, TimeUnit.SECONDS)) {
+                grpcServer.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            grpcServer.shutdownNow();
+        }
+    }
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/ServerActivityInterceptor.java
+```java
+package org.example.messaging;
+
+import io.grpc.Metadata;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
+import io.grpc.ServerInterceptor;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+public class ServerActivityInterceptor implements ServerInterceptor {
+
+    private final static Logger logger = LogManager.getLogger(ServerActivityInterceptor.class);
+
+    private final AtomicBoolean activeFlag = new AtomicBoolean(false);
+    private static final List<String> ALLOWED_METHODS = Arrays.asList(
+            "org.example.CLIService/SetActiveFlag",
+            "org.example.CLIService/GetDB",
+            "org.example.CLIService/GetStatus",
+            "org.example.CLIService/GetLog",
+            "org.example.CLIService/GetNewViews",
+            "org.example.CLIService/Reset",
+            "org.example.CLIService/Crash",
+            "org.example.CLIService/Ping",
+            "org.example.PaxosService/Ping"
+    );
+
+    public void setActiveFlag(boolean active) {
+        activeFlag.set(active);
+    }
+
+    @Override
+    public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
+            ServerCall<ReqT, RespT> call,
+            Metadata headers,
+            ServerCallHandler<ReqT, RespT> next) {
+
+        if (activeFlag.get()) {
+            return next.startCall(call, headers);
+        } else {
+            // Get the full name of the incoming RPC method.
+            String fullMethodName = call.getMethodDescriptor().getFullMethodName();
+
+            // Only setActiveFLag method is allowed when server is inactive
+            if (ALLOWED_METHODS.contains(fullMethodName)) {
+                // For the allowed request, continue the call chain.
+                return next.startCall(call, headers);
+            } else {
+                // For all other methods, close the call with a 'PERMISSION_DENIED' status.
+                logger.info("Interceptor: Server is inactive. Blocking request for method: {}", fullMethodName);
+
+                // Do not call `next.startCall()`. This prevents the request from being
+                // processed by the service method, effectively emulating a "silent" server.
+                // The caller will eventually time out with a `DEADLINE_EXCEEDED` error.
+                return new ServerCall.Listener<ReqT>() {}; // Return a no-op listener
+            }
+        }
+    }
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/ExecutorManager.java
+```java
+package org.example;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.util.concurrent.*;
+
+public class ExecutorManager {
+
+    private static final Logger logger = LogManager.getLogger(ExecutorManager.class);
+
+    private final ExecutorService stateExecutor;
+    private final ExecutorService logExecutor;
+    private final ExecutorService networkExecutor;
+    private final ExecutorService streamingExecutor;
+    private final ExecutorService messageExecutor;
+    private final ExecutorService listeningExecutor;
+
+
+
+    public ExecutorManager(int otherServerCount) {
+
+        // State management: Single-threaded to avoid race conditions on state mutations
+        this.stateExecutor = Executors.newSingleThreadExecutor(createNamedThreadFactory("state-manager"));
+
+        // Log management: Single-threaded to maintain sequential consistency of log entries
+        this.logExecutor = Executors.newSingleThreadExecutor(createNamedThreadFactory("log-manager"));
+
+        // Network I/O: Fixed thread pool sized for concurrent network operations
+        // Size based on: otherServerCount * 2 (for send/receive) + buffer
+//        this.networkExecutor = createMonitoredNetworkExecutor();
+        this.networkExecutor = Executors.newFixedThreadPool(
+                100,
+                createNamedThreadFactory("network-io")
+        );
+
+        // Streaming operations: Fixed thread pool for long-running streaming RPCs
+        // Sized for concurrent NewView operations to all servers
+        this.streamingExecutor = Executors.newFixedThreadPool(
+                Math.max(5, otherServerCount),
+                createNamedThreadFactory("streaming-io")
+        );
+
+        // Message processing: Cached thread pool that can scale with incoming message load
+        this.messageExecutor = Executors.newCachedThreadPool(createNamedThreadFactory("message-processor"));
+
+        // Executor for listening to incoming messages - for use with grpc server
+        this.listeningExecutor = Executors.newSingleThreadExecutor(createNamedThreadFactory("grpc-listener"));
+
+    }
+
+    public ExecutorService getStateExecutor() {
+        return stateExecutor;
+    }
+
+    public ExecutorService getNetworkExecutor() {
+        return networkExecutor;
+    }
+
+    public void submitStateTransition(Runnable task) {
+        stateExecutor.submit(task);
+    }
+
+    public void submitLogOperation(Runnable task) {
+        logExecutor.submit(task);
+    }
+
+    public Future<?> submitNetworkIO(Runnable task) {
+        return networkExecutor.submit(task);
+    }
+
+    public void submitStreamingIO(Runnable task) {
+        streamingExecutor.submit(task);
+    }
+
+    public void submitMessageProcessing(Runnable task) {
+        messageExecutor.submit(task);
+    }
+
+    public Future<?> submitListeningTask(Runnable task) {
+        return listeningExecutor.submit(task);
+    }
+
+    public void shutdown() {
+        shutdownExecutor(networkExecutor, "Network");
+        shutdownExecutor(streamingExecutor, "Streaming");
+        shutdownExecutor(messageExecutor, "Message");
+        shutdownExecutor(logExecutor, "Log");
+        shutdownExecutor(stateExecutor, "State");
+        shutdownExecutor(listeningExecutor, "Listening");
+    }
+
+    private void shutdownExecutor(ExecutorService executor, String name) {
+        logger.info("Shutting down {} executor", name);
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                logger.warn("{} executor did not terminate in time, forcing shutdown", name);
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            logger.error("{} executor shutdown interrupted", name);
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Creates a ThreadFactory that produces named threads for better debugging
+     * and monitoring. Named threads help identify thread pool types in thread dumps.
+     */
+    private ThreadFactory createNamedThreadFactory(String poolName) {
+        return new ThreadFactory() {
+            private int counter = 0;
+
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread thread = new Thread(r);
+                thread.setName("-" + poolName + "-" + counter++);
+                thread.setDaemon(false); // Ensure proper shutdown control
+                return thread;
+            }
+        };
+    }
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/messaging/ClientService.java
+```java
+package org.example.messaging;
+
+import com.google.protobuf.Empty;
+import io.grpc.stub.StreamObserver;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.ClientServiceGrpc;
+
+public class ClientService extends ClientServiceGrpc.ClientServiceImplBase {
+    private static final Logger logger = LogManager.getLogger(ClientService.class);
+
+    @Override
+    public void ping(Empty request, StreamObserver<Empty> responseObserver) {
+        logger.debug("Received ping request");
+        responseObserver.onNext(Empty.newBuilder().build());
+        responseObserver.onCompleted();
+    }
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/messaging/CLIServiceServer.java
+```java
+package org.example.messaging;
+
+import com.google.protobuf.Empty;
+import io.grpc.stub.StreamObserver;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.*;
+
+public class CLIServiceServer extends CLIServiceGrpc.CLIServiceImplBase {
+    private static final Logger logger = LogManager.getLogger(CLIServiceServer.class);
+
+    private final ServerMain server;
+
+    public CLIServiceServer(ServerMain server) {
+        this.server = server;
+    }
+
+    @Override
+    public void setActiveFlag(ActiveFlag request, StreamObserver<Acknowledgement> responseObserver) {
+//        server.setActive(request.getActiveFlag());
+        logger.info("Set active flag to: {}", request.getActiveFlag());
+        Acknowledgement ack = Acknowledgement.newBuilder().setStatus(true).build();
+        responseObserver.onNext(ack);
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void ping(Empty request, StreamObserver<Empty> responseObserver) {
+        logger.debug("Received ping request");
+        responseObserver.onNext(Empty.newBuilder().build());
+        responseObserver.onCompleted();
+    }
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/messaging/TPCMessageSender.java
+```java
+package org.example.messaging;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.util.concurrent.ExecutorService;
+
+public class TPCMessageSender extends MessageSender {
+
+    private static final Logger logger = LogManager.getLogger(TPCMessageSender.class);
+
+    public TPCMessageSender(int nodeId, ExecutorService networkExecutor) {
+        super(nodeId, networkExecutor);
+    }
+
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/TPCServer.java
+```java
+package org.example;
+
+import io.grpc.BindableService;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.messaging.CLIServiceServer;
+import org.example.messaging.TPCMessageSender;
+
+import java.util.List;
+
+public class TPCServer {
+    private static final Logger logger = LogManager.getLogger(TPCServer.class);
+
+    private final int serverId;
+    private final CLIServiceServer cliServiceServer;
+    private final PaxosServer paxosServer;
+
+    private final TPCMessageSender messageSender;
+
+
+    public TPCServer(int serverId, CLIServiceServer cliServiceServer, ExecutorManager executorManager) {
+        this.serverId = serverId;
+        this.paxosServer = new PaxosServer(serverId);
+        this.cliServiceServer = cliServiceServer;
+
+        // this will perform warmup
+        this.messageSender = new TPCMessageSender(serverId, executorManager.getNetworkExecutor());
+    }
+
+    public List<BindableService> getServices() {
+        return List.of(paxosServer.getPaxosService(), cliServiceServer);
+    }
+
+    public void warmup() {
+        messageSender.warmup();
+    }
+}
+
+```
+
+## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/ServerMain.java
+```java
+package org.example;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.example.config.Config;
+import org.example.messaging.CLIServiceServer;
+import org.example.messaging.MessageReceiver;
+import org.example.messaging.ServerActivityInterceptor;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
+public class ServerMain {
+    private final int serverId;
+    private final Logger logger;
+
+    private final ExecutorManager executorManager;
+
+    private TPCServer server;
+    private final CLIServiceServer cliServiceServer;
+
+    private final MessageReceiver messageReceiver;
+
+    public ServerMain(int serverId) {
+        this.serverId = serverId;
+        // Initialize the instance logger here so Log4j has already been configured in main()
+        this.logger = LogManager.getLogger(ServerMain.class);
+        this.executorManager = new ExecutorManager(Config.getNodes().size() - 1);
+        this.cliServiceServer = new CLIServiceServer(this);
+        this.server = new TPCServer(serverId, cliServiceServer, executorManager);
+        this.messageReceiver = new MessageReceiver(serverId, Config.getNodePort(serverId), server.getServices(), new ServerActivityInterceptor());
+    }
+
+    @SuppressWarnings("unused")
+    public void reset() {
+        this.server = new TPCServer(serverId, cliServiceServer, executorManager);
+        logger.info("Server {} state has been reset.", serverId);
+    }
+
+    public void start() {
+        logger.info("Starting Server {}", serverId);
+        try {
+            executorManager.submitListeningTask(() -> messageReceiver.startListening(server::warmup));
+        } catch (Exception e) {
+            logger.error("Server {} encountered an error: {}", serverId, e.getMessage(), e);
+        }
+    }
+
+    public void shutdown() {
+        logger.info("Shutting down Server {}", serverId);
+        messageReceiver.shutdown();
+        executorManager.shutdown();
+    }
+
+    public static void main(String[] args) {
+        System.out.println("Hello, World!");
+
+        if (args.length != 1) {
+            System.err.println("Node ID argument required");
+            System.exit(1);
+        }
+
+        int sid = Integer.parseInt(args[0]);
+
+        // Compute a safe ISO-like timestamp for the log filename (no characters illegal on Windows)
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss.SSS"));
+        // Build a log path and expose it as a system property so Log4j can interpolate it without extra property indirection
+        String logPath = "logs/server-" + sid + "/log-" + timestamp + ".log";
+        System.setProperty("logPath", logPath);
+
+        // Ensure parent directories for the log file exist so the File appender can create the file
+        File parent = new File(logPath).getParentFile();
+        if (parent != null && !parent.exists()) {
+            try {
+                Files.createDirectories(parent.toPath());
+            } catch (IOException ioe) {
+                // Can't rely on Log4j being configured yet; print to stderr as a last resort
+                System.err.println("Failed to create log directory '" + parent.getAbsolutePath() + "': " + ioe.getMessage());
+            }
+        }
+
+        // Reconfigure Log4j context so it picks up the new system properties (logPath)
+        LoggerContext context = (LoggerContext) LogManager.getContext(false);
+        context.reconfigure();
+
+        // Now it's safe to create the ServerMain instance which in turn creates the instance logger
+        Logger tempLogger = LogManager.getLogger(ServerMain.class);
+        tempLogger.info("Starting ServerMain for server ID {}", sid);
+
+        Config.initialize();
+        ServerMain serverMain = new ServerMain(sid);
+        // Add a shutdown hook so shutdown() is called on JVM exit (SIGINT, SIGTERM, etc.)
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                serverMain.logger.info("Shutdown hook triggered - shutting down server");
+                serverMain.shutdown();
+            } catch (Exception e) {
+                // Best-effort shutdown logging; avoid throwing from shutdown hook
+                Logger hookLogger = LogManager.getLogger(ServerMain.class);
+                hookLogger.error("Error during shutdown hook: {}", e.getMessage(), e);
+            }
+        }));
+
+        serverMain.start();
+    }
+}
+```
+
