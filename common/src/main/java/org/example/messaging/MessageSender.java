@@ -40,9 +40,9 @@ public class MessageSender {
     }
 
     public void warmup() {
-        logger.info("Waiting for everyone to start up...");
+        logger.debug("Waiting for everyone to start up...");
         try {
-            Thread.sleep(100);
+            Thread.sleep(300);
             stubManager.warmup();
         } catch (InterruptedException e) {
             throw new RuntimeException(e);

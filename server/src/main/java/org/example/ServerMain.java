@@ -35,7 +35,9 @@ public class ServerMain {
         // Initialize the instance logger here so Log4j has already been configured in main()
         this.logger = LogManager.getLogger(ServerMain.class);
         this.executorManager = new ExecutorManager(Config.getNodes().size() - 1);
+        logger.info("Connecting to database for Server {}", serverId);
         this.database = DatabaseManager.create(serverId);
+        logger.info("Database connection established for Server {}", serverId);
         this.cliServiceServer = new CLIServiceServer(this);
         this.server = new TPCServer(serverId, cliServiceServer, executorManager, database);
         this.messageReceiver = new MessageReceiver(serverId, Config.getNodePort(serverId), server.getServices(), new ServerActivityInterceptor());
@@ -62,7 +64,7 @@ public class ServerMain {
         if (modifiedAccounts.isEmpty()) {
 //            sb.append("No accounts have been modified. Printing balances of first 10 accounts\n");
             for (int accountId = 1; accountId <= 10; accountId++) {
-                int key = (Config.getDatabaseSize() / Config.getServerClusterCount()) * (serverId / Config.getServerClusterCount()) + accountId;
+                int key = (Config.getDatabaseSize() / Config.getServerClusterCount()) * ((serverId - 1) / Config.getServerClusterCount()) + accountId;
                 Double balance = database.get(key);
                 sb.append(key).append(" : ").append(balance).append("; ");
             }

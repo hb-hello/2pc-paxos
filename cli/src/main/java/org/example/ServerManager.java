@@ -27,7 +27,9 @@ public class ServerManager {
                     jarPath,
                     String.valueOf(i)
             );
-            pb.inheritIO();
+//            pb.inheritIO();
+            pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
+            pb.redirectError(ProcessBuilder.Redirect.DISCARD);
             Process process = pb.start();
             processes.add(process);
             System.out.println("Started server " + i);

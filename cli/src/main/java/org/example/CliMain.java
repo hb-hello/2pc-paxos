@@ -4,25 +4,43 @@ import org.example.config.Config;
 import org.example.messaging.CLIMessageSender;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LoggerContext;
+import org.example.messaging.CLIServiceClient;
+import org.example.messaging.MessageReceiver;
 import org.example.persistence.DBHandler;
 
 import java.io.File;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Scanner;
 import java.util.concurrent.Executors;
 
 public class CliMain {
 
+    private final ExecutorManager executorManager;
     private final DBHandler dbHandler;
-    private CLIMessageSender cliMessageSender;
+    private final CLIMessageSender cliMessageSender;
+    private final MessageReceiver messageReceiver;
 
     public CliMain() {
         // Instantiate DBHandler so CLI commands can query DB contents
+        this.executorManager = new ExecutorManager(Config.getNodes().size() - 1);
         this.dbHandler = new DBHandler();
 
+        this.cliMessageSender = new CLIMessageSender(0, Executors.newSingleThreadExecutor());
+        CLIServiceClient cliServiceClient = new CLIServiceClient(this);
+        this.messageReceiver = new MessageReceiver(0, Config.getClientPort(), List.of(cliServiceClient));
+
         startAllServers();
+    }
+
+    public void start() {
+        try {
+            executorManager.submitListeningTask(() -> messageReceiver.startListening(() -> {}));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public void activateAllServers() {
@@ -36,31 +54,18 @@ public class CliMain {
                     System.out.println("Warning: failed to activate server " + i + " " + e.getMessage());
                 }
             }
-//            System.out.println("Resetting all servers before client warmup...");
-            // Activate all known servers so clients can warm connections to all of them
             System.out.println("Server reset/activation complete.");
         } catch (Exception e) {
             System.out.println("Warning: failed to reset/activate servers before warmup: " + e.getMessage());
         }
     }
 
-
     private void startAllServers() {
         try {
             ServerManager.startAllServers(Config.getServerExecutablePath(), Config.getServerCount());
 
-            // this calls the warmup action
-
-            this.cliMessageSender = new CLIMessageSender(0, Executors.newSingleThreadExecutor());
-
             try {
-                Thread.sleep(1000); // wait a bit for processes to start
-
-                //potentially start receiver server
-                Thread.sleep(1000); // wait a bit for GRPC servers to start
-                cliMessageSender.warmup();
-
-                activateAllServers();
+                start();
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
@@ -68,6 +73,13 @@ public class CliMain {
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public void warmup() {
+        executorManager.submitMessageProcessing(() -> {
+            cliMessageSender.warmup();
+            activateAllServers();
+        });
     }
 
     private void printDBForAccountId(String idStr) {
@@ -82,9 +94,18 @@ public class CliMain {
         }
     }
 
+    private void fetchAndPrintDB() {
+        try {
+            cliMessageSender.printDB();
+        } catch (Exception e) {
+            System.out.println("Error fetching DB contents: " + e.getMessage());
+        }
+    }
+
     private void shutdown() {
         try {
             dbHandler.shutdown();
+            messageReceiver.shutdown();
         } catch (Exception ignored) {
         }
     }
@@ -134,7 +155,10 @@ public class CliMain {
             String choice = sc.nextLine().trim();
 
             switch (choice) {
-                case "1" -> System.out.println("Printing DB contents from all servers:");
+                case "1" -> {
+                    System.out.println("Printing DB contents from all servers:");
+                    cli.fetchAndPrintDB();
+                }
                 case "9" -> {
                     System.out.print("Enter client ID: ");
                     String idStr = sc.nextLine().trim();

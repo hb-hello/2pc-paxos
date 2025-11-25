@@ -192,7 +192,7 @@ public class StubManager {
                                 .ping(Empty.getDefaultInstance());
                         logger.debug("Warmup CLI ping successful to node {}", nodeId);
                     } catch (Exception e) {
-                        logger.warn("Warmup ping to node {} CLI stub failed: {}", nodeId, e.getMessage());
+                        logger.debug("Warmup ping to node {} CLI stub failed: {}", nodeId, e.getMessage());
                     }
                     try {
                         Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
@@ -212,7 +212,7 @@ public class StubManager {
                                 .ping(Empty.getDefaultInstance());
                         logger.debug("Warmup Paxos ping successful to node {}", nodeId);
                     } catch (Exception e) {
-                        logger.warn("Warmup ping to node {} Paxos stub failed: {}", nodeId, e.getMessage());
+                        logger.debug("Warmup ping to node {} Paxos stub failed: {}", nodeId, e.getMessage());
                     }
                     try {
                         Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
@@ -232,7 +232,7 @@ public class StubManager {
                                 .ping(Empty.getDefaultInstance());
                         logger.debug("Warmup Client ping successful to node {}", nodeId);
                     } catch (Exception e) {
-                        logger.warn("Warmup ping to node {} Client stub failed: {}", nodeId, e.getMessage());
+                        logger.debug("Warmup ping to node {} Client stub failed: {}", nodeId, e.getMessage());
                     }
                     try {
                         Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
