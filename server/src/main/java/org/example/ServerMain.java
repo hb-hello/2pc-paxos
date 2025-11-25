@@ -7,16 +7,15 @@ import org.example.config.Config;
 import org.example.messaging.CLIServiceServer;
 import org.example.messaging.MessageReceiver;
 import org.example.messaging.ServerActivityInterceptor;
+import org.example.persistence.DatabaseManager;
+import org.example.persistence.KeyValueStore;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.Set;
 
 public class ServerMain {
     private final int serverId;
@@ -24,24 +23,27 @@ public class ServerMain {
 
     private final ExecutorManager executorManager;
 
-    private TPCServer server;
-    private final CLIServiceServer cliServiceServer;
+    private final KeyValueStore<Double> database;
 
     private final MessageReceiver messageReceiver;
+    private final CLIServiceServer cliServiceServer;
+
+    private TPCServer server;
 
     public ServerMain(int serverId) {
         this.serverId = serverId;
         // Initialize the instance logger here so Log4j has already been configured in main()
         this.logger = LogManager.getLogger(ServerMain.class);
         this.executorManager = new ExecutorManager(Config.getNodes().size() - 1);
+        this.database = DatabaseManager.create(serverId);
         this.cliServiceServer = new CLIServiceServer(this);
-        this.server = new TPCServer(serverId, cliServiceServer, executorManager);
+        this.server = new TPCServer(serverId, cliServiceServer, executorManager, database);
         this.messageReceiver = new MessageReceiver(serverId, Config.getNodePort(serverId), server.getServices(), new ServerActivityInterceptor());
     }
 
     @SuppressWarnings("unused")
     public void reset() {
-        this.server = new TPCServer(serverId, cliServiceServer, executorManager);
+        this.server = new TPCServer(serverId, cliServiceServer, executorManager, database);
         logger.info("Server {} state has been reset.", serverId);
     }
 
@@ -51,6 +53,27 @@ public class ServerMain {
             executorManager.submitListeningTask(() -> messageReceiver.startListening(server::warmup));
         } catch (Exception e) {
             logger.error("Server {} encountered an error: {}", serverId, e.getMessage(), e);
+        }
+    }
+
+    public String getDB() {
+        Set<Integer> modifiedAccounts = server.getModifiedAccounts();
+        StringBuilder sb = new StringBuilder();
+        if (modifiedAccounts.isEmpty()) {
+//            sb.append("No accounts have been modified. Printing balances of first 10 accounts\n");
+            for (int accountId = 1; accountId <= 10; accountId++) {
+                int key = (Config.getDatabaseSize() / Config.getServerClusterCount()) * (serverId / Config.getServerClusterCount()) + accountId;
+                Double balance = database.get(key);
+                sb.append(key).append(" : ").append(balance).append("; ");
+            }
+            return sb.toString();
+        } else {
+//            sb.append("Modified Accounts:\n");
+            for (Integer accountId : modifiedAccounts) {
+                Double balance = database.get(accountId);
+                sb.append(accountId).append(" : ").append(balance).append("; ");
+            }
+            return sb.toString();
         }
     }
 

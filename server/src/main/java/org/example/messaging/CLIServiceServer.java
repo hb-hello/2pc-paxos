@@ -25,6 +25,15 @@ public class CLIServiceServer extends CLIServiceGrpc.CLIServiceImplBase {
     }
 
     @Override
+    public void getDB(Empty request, StreamObserver<CLIResponse> responseObserver) {
+        logger.info("Received getDB request");
+        String dbContent = server.getDB();
+        CLIResponse response = CLIResponse.newBuilder().setCliResponse(dbContent).build();
+        responseObserver.onNext(response);
+        responseObserver.onCompleted();
+    }
+
+    @Override
     public void ping(Empty request, StreamObserver<Empty> responseObserver) {
         logger.debug("Received ping request");
         responseObserver.onNext(Empty.newBuilder().build());

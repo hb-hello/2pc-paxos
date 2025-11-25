@@ -19,6 +19,8 @@
         <maven.compiler.source>24</maven.compiler.source>
         <maven.compiler.target>24</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <chronicle.add.opens.map>--add-opens=net.openhft.chronicle.map/net.openhft.chronicle.map=ALL-UNNAMED</chronicle.add.opens.map>
+        <chronicle.add.opens.core>--add-opens=net.openhft.chronicle.core/net.openhft.chronicle.core=ALL-UNNAMED</chronicle.add.opens.core>
     </properties>
 
     <dependencyManagement>
@@ -27,6 +29,13 @@
                 <groupId>org.apache.logging.log4j</groupId>
                 <artifactId>log4j-bom</artifactId>
                 <version>2.25.1</version>
+                <scope>import</scope>
+                <type>pom</type>
+            </dependency>
+            <dependency>
+                <groupId>org.dizitart</groupId>
+                <artifactId>nitrite-bom</artifactId>
+                <version>4.3.2</version>
                 <scope>import</scope>
                 <type>pom</type>
             </dependency>
@@ -105,6 +114,23 @@
             <groupId>com.lmax</groupId>
             <artifactId>disruptor</artifactId>
             <version>4.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.dizitart</groupId>
+            <artifactId>nitrite</artifactId>
+            <version>4.3.2</version>
+        </dependency>
+        <!-- https://mvnrepository.com/artifact/org.dizitart/nitrite-mvstore-adapter -->
+        <dependency>
+            <groupId>org.dizitart</groupId>
+            <artifactId>nitrite-mvstore-adapter</artifactId>
+            <version>4.3.2</version>
+        </dependency>
+        <!-- https://mvnrepository.com/artifact/net.openhft/chronicle-map -->
+        <dependency>
+            <groupId>net.openhft</groupId>
+            <artifactId>chronicle-map</artifactId>
+            <version>3.27ea0</version>
         </dependency>
     </dependencies>
 

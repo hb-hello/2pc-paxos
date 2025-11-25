@@ -9,6 +9,7 @@ option java_multiple_files = true;
 
 service CLIService {
   rpc SetActiveFlag (ActiveFlag) returns (Acknowledgement) {};
+  rpc Reset(google.protobuf.Empty) returns (Acknowledgement) {};
 
   rpc FailLeader(google.protobuf.Empty) returns (Acknowledgement);
 

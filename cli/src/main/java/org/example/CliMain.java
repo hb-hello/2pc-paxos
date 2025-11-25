@@ -4,6 +4,7 @@ import org.example.config.Config;
 import org.example.messaging.CLIMessageSender;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LoggerContext;
+import org.example.persistence.DBHandler;
 
 import java.io.File;
 import java.io.IOException;
@@ -14,7 +15,17 @@ import java.util.concurrent.Executors;
 
 public class CliMain {
 
-    public static void activateAllServers(CLIMessageSender cliMessageSender) {
+    private final DBHandler dbHandler;
+    private CLIMessageSender cliMessageSender;
+
+    public CliMain() {
+        // Instantiate DBHandler so CLI commands can query DB contents
+        this.dbHandler = new DBHandler();
+
+        startAllServers();
+    }
+
+    public void activateAllServers() {
         try {
             System.out.println("Waiting briefly before activating all servers for client warmup...");
             Thread.sleep(500); // brief pause to ensure any prior operations have settled
@@ -30,6 +41,51 @@ public class CliMain {
             System.out.println("Server reset/activation complete.");
         } catch (Exception e) {
             System.out.println("Warning: failed to reset/activate servers before warmup: " + e.getMessage());
+        }
+    }
+
+
+    private void startAllServers() {
+        try {
+            ServerManager.startAllServers(Config.getServerExecutablePath(), Config.getServerCount());
+
+            // this calls the warmup action
+
+            this.cliMessageSender = new CLIMessageSender(0, Executors.newSingleThreadExecutor());
+
+            try {
+                Thread.sleep(1000); // wait a bit for processes to start
+
+                //potentially start receiver server
+                Thread.sleep(1000); // wait a bit for GRPC servers to start
+                cliMessageSender.warmup();
+
+                activateAllServers();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void printDBForAccountId(String idStr) {
+        try {
+            int id = Integer.parseInt(idStr);
+            String result = dbHandler.getAccountEntry(id);
+            System.out.println(result);
+        } catch (NumberFormatException nfe) {
+            System.out.println("Invalid client ID: must be an integer.");
+        } catch (Exception e) {
+            System.out.println("Error fetching account entry: " + e.getMessage());
+        }
+    }
+
+    private void shutdown() {
+        try {
+            dbHandler.shutdown();
+        } catch (Exception ignored) {
         }
     }
 
@@ -56,28 +112,7 @@ public class CliMain {
         LoggerContext context = (LoggerContext) LogManager.getContext(false);
         context.reconfigure();
 
-        try {
-            ServerManager.startAllServers(Config.getServerExecutablePath(), Config.getServerCount());
-
-            // this calls the warmup action
-
-            CLIMessageSender cliMessageSender = new CLIMessageSender(0, Executors.newSingleThreadExecutor());
-
-            try {
-                Thread.sleep(1000); // wait a bit for processes to start
-
-                //potentially start receiver server
-                Thread.sleep(1000); // wait a bit for GRPC servers to start
-                cliMessageSender.warmup();
-
-                activateAllServers(cliMessageSender);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+        CliMain cli = new CliMain();
 
         int next = 0;
         Scanner sc = new Scanner(System.in);
@@ -93,16 +128,24 @@ public class CliMain {
             System.out.println(" 6 - DEBUG: PrintOperationLog");
             System.out.println(" 7 - DEBUG: Pause/Resume client (pause a client to inspect logs/db)");
             System.out.println(" 8 - DEBUG: Choose next set number");
+            System.out.println(" 9 - DEBUG: PrintDB directly");
             System.out.println(" 0 - Exit");
             System.out.print("Choice: ");
             String choice = sc.nextLine().trim();
 
             switch (choice) {
                 case "1" -> System.out.println("Printing DB contents from all servers:");
+                case "9" -> {
+                    System.out.print("Enter client ID: ");
+                    String idStr = sc.nextLine().trim();
+                    cli.printDBForAccountId(idStr);
+                }
                 case "0" -> {
                     System.out.println("Exiting...");
+                    cli.shutdown();
                     return;
                 }
+
                 default -> System.out.println("Unknown choice.");
             }
         }
