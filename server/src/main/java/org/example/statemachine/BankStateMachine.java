@@ -5,6 +5,7 @@ import org.apache.logging.log4j.Logger;
 import org.example.Operation;
 import org.example.OperationResult;
 import org.example.StateMachine;
+import org.example.TPCServer;
 import org.example.persistence.KeyValueStore;
 
 import java.util.HashMap;
@@ -47,7 +48,7 @@ public final class BankStateMachine implements StateMachine {
     }
 
     @Override
-    public OperationResult execute(Operation operation, ExecutionMode mode) {
+    public OperationResult execute(Operation operation, TPCServer.ExecutionMode mode) {
         StateMachineOperation op = StateMachineOperationMapper.fromProto(operation);
 
         return op.accept(new StateMachineOperation.Visitor<>() {

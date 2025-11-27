@@ -7,7 +7,7 @@ public interface StateMachine {
     /**
      * Execute a single deterministic operation and return a proto OperationResult.
      */
-    OperationResult execute(Operation operation, ExecutionMode mode);
+    OperationResult execute(Operation operation, TPCServer.ExecutionMode mode);
 
     /**
      * Consistent snapshot of application state for CLI/inspection.
@@ -20,10 +20,4 @@ public interface StateMachine {
      * Clear all application state (used between test sets and on ServerState.reset()).
      */
     void reset();
-
-    enum ExecutionMode {
-        BOTH,
-        SENDER,
-        RECEIVER
-    }
 }

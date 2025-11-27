@@ -61,7 +61,7 @@ public class TPCServer {
     public void handleClientRequest(ClientRequest request, StreamObserver<ClientReply> responseObserver) {
         try {
             Operation operation = request.getOperation();
-            OperationResult result = stateMachine.execute(operation, StateMachine.ExecutionMode.BOTH);
+            OperationResult result = stateMachine.execute(operation, ExecutionMode.BOTH);
 
             ClientReply reply = ClientReply.newBuilder()
                     .setResult(result)
@@ -82,5 +82,11 @@ public class TPCServer {
         } catch (Exception e) {
             logger.error("Error executing client request {}: {}", request, e.getMessage());
         }
+    }
+
+    public enum ExecutionMode {
+        BOTH,
+        SENDER,
+        RECEIVER
     }
 }
