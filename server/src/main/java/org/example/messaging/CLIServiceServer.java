@@ -17,8 +17,34 @@ public class CLIServiceServer extends CLIServiceGrpc.CLIServiceImplBase {
 
     @Override
     public void setActiveFlag(ActiveFlag request, StreamObserver<Acknowledgement> responseObserver) {
-//        server.setActive(request.getActiveFlag());
+        server.setActive(request.getActiveFlag());
         logger.info("Set active flag to: {}", request.getActiveFlag());
+        Acknowledgement ack = Acknowledgement.newBuilder().setStatus(true).build();
+        responseObserver.onNext(ack);
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void failNode(NodeId nodeId, StreamObserver<Acknowledgement> responseObserver) {
+        server.setActive(false);
+        logger.info("Fail server called from CLI");
+        Acknowledgement ack = Acknowledgement.newBuilder().setStatus(true).build();
+        responseObserver.onNext(ack);
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void recoverNode(NodeId nodeId, StreamObserver<Acknowledgement> responseObserver) {
+        server.setActive(true);
+        logger.info("Recover server called from CLI");
+        Acknowledgement ack = Acknowledgement.newBuilder().setStatus(true).build();
+        responseObserver.onNext(ack);
+        responseObserver.onCompleted();
+    }
+
+    public void reset(Empty request, StreamObserver<Acknowledgement> responseObserver) {
+        logger.info("Reset server called from CLI");
+        server.reset();
         Acknowledgement ack = Acknowledgement.newBuilder().setStatus(true).build();
         responseObserver.onNext(ack);
         responseObserver.onCompleted();

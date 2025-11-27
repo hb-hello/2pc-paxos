@@ -25,6 +25,7 @@ public class ServerActivityInterceptor implements ServerInterceptor {
             "org.example.CLIService/Reset",
             "org.example.CLIService/Crash",
             "org.example.CLIService/Ping",
+            "org.example.ClientService/Ping",
             "org.example.PaxosService/Ping"
     );
 

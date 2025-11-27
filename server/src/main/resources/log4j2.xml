@@ -5,7 +5,7 @@
          Provide a safe fallback file name so Log4j never attempts to open the literal '${sys:logPath}'.
          createOnDemand prevents an immediate failure if the file can't be created at configuration-time. -->
     <File name="ServerFile" fileName="${sys:logPath:-logs/server-default.log}" append="true" createOnDemand="true">
-      <PatternLayout pattern="%d{ISO8601} [%t] %-5level %logger{36} - %msg%n"/>
+      <PatternLayout pattern="%d{ISO8601} [%t] %-5level %logger{20} - %msg%n"/>
     </File>
   </Appenders>
 

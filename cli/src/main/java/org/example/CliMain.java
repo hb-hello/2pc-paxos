@@ -1,9 +1,12 @@
 package org.example;
 
-import org.example.config.Config;
-import org.example.messaging.CLIMessageSender;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LoggerContext;
+import org.example.client.ClientNode;
+import org.example.client.TransactionSet;
+import org.example.client.TransactionSetLoader;
+import org.example.config.Config;
+import org.example.messaging.CLIMessageSender;
 import org.example.messaging.CLIServiceClient;
 import org.example.messaging.MessageReceiver;
 import org.example.persistence.DBHandler;
@@ -12,7 +15,9 @@ import java.io.File;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.Executors;
 
@@ -22,6 +27,7 @@ public class CliMain {
     private final DBHandler dbHandler;
     private final CLIMessageSender cliMessageSender;
     private final MessageReceiver messageReceiver;
+    private final List<TransactionSet> transactionSets;
 
     public CliMain() {
         // Instantiate DBHandler so CLI commands can query DB contents
@@ -32,14 +38,33 @@ public class CliMain {
         CLIServiceClient cliServiceClient = new CLIServiceClient(this);
         this.messageReceiver = new MessageReceiver(0, Config.getClientPort(), List.of(cliServiceClient));
 
+        // Pre-load all transaction sets from CSV
+        try {
+            TransactionSetLoader loader = new TransactionSetLoader();
+            this.transactionSets = loader.loadAll(); // uses Config.getTransactionsSetsPath()[attached_file:1]
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load transaction sets", e);
+        }
+
         startAllServers();
     }
 
     public void start() {
         try {
-            executorManager.submitListeningTask(() -> messageReceiver.startListening(() -> {}));
+            executorManager.submitListeningTask(() -> messageReceiver.startListening(() -> {
+            }));
         } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    public void resetAllServers() {
+        for (int i = 1; i <= Config.getServerCount(); i++) {
+            try {
+                cliMessageSender.sendReset(i);
+            } catch (Exception e) {
+                System.out.println("Warning: failed to reset server " + i + " " + e.getMessage());
+            }
         }
     }
 
@@ -60,6 +85,29 @@ public class CliMain {
         }
     }
 
+    /**
+     * Deactivates all server nodes and activates only the given server IDs.
+     */
+    private void activateServers(List<Integer> activeServerIds) {
+        try {
+            // Deactivate all servers first
+            for (int i = 1; i <= Config.getServerCount(); i++) {
+                cliMessageSender.sendActiveFlag(i, false);
+            }
+
+            // Activate only the specified servers
+            for (int serverId : activeServerIds) {
+                try {
+                    cliMessageSender.sendActiveFlag(serverId, true);
+                } catch (Exception e) {
+                    System.out.println("Warning: failed to activate server " + serverId + " " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("Error while (de)activating servers: " + e.getMessage());
+        }
+    }
+
     private void startAllServers() {
         try {
             ServerManager.startAllServers(Config.getServerExecutablePath(), Config.getServerCount());
@@ -76,10 +124,55 @@ public class CliMain {
     }
 
     public void warmup() {
-        executorManager.submitMessageProcessing(() -> {
-            cliMessageSender.warmup();
-            activateAllServers();
-        });
+        executorManager.submitMessageProcessing(cliMessageSender::warmup);
+    }
+
+    /**
+     * Process a single transaction set by set number:
+     *  - find the TransactionSet
+     *  - activate the correct live servers
+     *  - build a ClientNode using DBHandler's account→cluster mapping
+     *  - send all transactions in order
+     */
+    private void processTransactionSet(int setNumber) {
+        if (transactionSets == null || transactionSets.isEmpty()) {
+            System.out.println("No transaction sets loaded.");
+            return;
+        }
+
+        TransactionSet set = transactionSets.stream()
+                .filter(ts -> ts.setNumber() == setNumber)
+                .findFirst()
+                .orElse(null);
+
+        if (set == null) {
+            System.out.printf("Transaction set %d not found.%n", setNumber);
+            return;
+        }
+
+        System.out.printf("Processing set %d with %d transactions, live nodes: %s%n",
+                setNumber, set.transactions().size(), set.liveNodes());
+
+        // Live nodes in CSV are like "n1, n2, n3" or "[n1, n2, ...]"[attached_file:2]
+        List<Integer> activeServerIds = set.liveNodes();
+        activateServers(activeServerIds);
+
+        // Fetch account→cluster mapping from DBHandler
+        Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
+
+        // Create a fresh ClientNode for this set
+        ClientNode clientNode = new ClientNode(0, cliMessageSender, accountToClusterIndex);
+
+        resetAllServers();
+
+        activateServers(set.liveNodes());
+
+        // Send all transactions in order
+        for (String tx : set.transactions()) {
+            clientNode.processTransaction(tx);
+        }
+
+        System.out.printf("Finished processing set %d%n", setNumber);
     }
 
     private void printDBForAccountId(String idStr) {
@@ -135,7 +228,7 @@ public class CliMain {
 
         CliMain cli = new CliMain();
 
-        int next = 0;
+        int nextSetNumber = 1;
         Scanner sc = new Scanner(System.in);
 
         while (true) {
@@ -145,7 +238,7 @@ public class CliMain {
             System.out.println(" 2 - PrintLog");
             System.out.println(" 3 - PrintStatus");
             System.out.println(" 4 - PrintView");
-            System.out.println(" 5 - Continue with next set (#" + (next + 1) + ")");
+            System.out.println(" 5 - Continue with next set (#" + (nextSetNumber) + ")");
             System.out.println(" 6 - DEBUG: PrintOperationLog");
             System.out.println(" 7 - DEBUG: Pause/Resume client (pause a client to inspect logs/db)");
             System.out.println(" 8 - DEBUG: Choose next set number");
@@ -158,6 +251,11 @@ public class CliMain {
                 case "1" -> {
                     System.out.println("Printing DB contents from all servers:");
                     cli.fetchAndPrintDB();
+                }
+                case "5" -> {
+                    System.out.println("Processing transaction set #" + (nextSetNumber));
+                    cli.processTransactionSet(nextSetNumber);
+                    nextSetNumber++;
                 }
                 case "9" -> {
                     System.out.print("Enter client ID: ");

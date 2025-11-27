@@ -8,8 +8,8 @@ public sealed interface StateMachineOperation permits TransferOp, BalanceRequest
 
     /** Simple visitor for exhaustive handling without instanceof checks. */
     interface Visitor<StateMachineOperationResult> {
-        StateMachineOperationResult onTransfer(String sender, String receiver, double amount);
-        StateMachineOperationResult onBalanceRequest(String accountId);
+        StateMachineOperationResult onTransfer(int sender, int receiver, double amount);
+        StateMachineOperationResult onBalanceRequest(int accountId);
     }
 
     /**
@@ -23,11 +23,11 @@ public sealed interface StateMachineOperation permits TransferOp, BalanceRequest
     }
 
     // Optional convenience factories
-    static StateMachineOperation transfer(String sender, String receiver, double amount) {
+    static StateMachineOperation transfer(int sender, int receiver, double amount) {
         return new TransferOp(sender, receiver, amount);
     }
 
-    static StateMachineOperation balanceRequest(String accountId) {
+    static StateMachineOperation balanceRequest(int accountId) {
         return new BalanceRequestOp(accountId);
     }
 }

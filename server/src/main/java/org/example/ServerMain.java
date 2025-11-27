@@ -45,8 +45,14 @@ public class ServerMain {
 
     @SuppressWarnings("unused")
     public void reset() {
+        // potentially set a new serverId here if supporting re-configuration
         this.server = new TPCServer(serverId, cliServiceServer, executorManager, database);
         logger.info("Server {} state has been reset.", serverId);
+    }
+
+    public void setActive(boolean active) {
+        messageReceiver.setActive(active);
+        server.setActive(active);
     }
 
     public void start() {
@@ -60,6 +66,7 @@ public class ServerMain {
 
     public String getDB() {
         Set<Integer> modifiedAccounts = server.getModifiedAccounts();
+        logger.info("Modified accounts for Server {}: {}", serverId, modifiedAccounts);
         StringBuilder sb = new StringBuilder();
         if (modifiedAccounts.isEmpty()) {
 //            sb.append("No accounts have been modified. Printing balances of first 10 accounts\n");

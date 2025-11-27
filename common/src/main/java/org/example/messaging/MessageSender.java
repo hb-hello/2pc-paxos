@@ -44,6 +44,7 @@ public class MessageSender {
         try {
             Thread.sleep(300);
             stubManager.warmup();
+            System.out.println("All nodes are up and running.");
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }

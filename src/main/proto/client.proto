@@ -16,13 +16,13 @@ service ClientService {
 
 // Core operation definitions
 message Transfer {
-  string sender = 1;
-  string receiver = 2;
+  int32 sender = 1;
+  int32 receiver = 2;
   double amount = 3;
 }
 
 message BalanceRequest {
-  string account_id = 1;
+  int32 account_id = 1;
 }
 
 message Operation {
@@ -43,13 +43,13 @@ message OperationResult {
 message ClientRequest {
   int64 timestamp = 1;
   Operation operation = 2;
-  string client_id = 3;
+  int32 client_id = 3;
+  bool is_read_only = 4;
 }
 
 message ClientReply {
-  string sender_id = 1;
+  int32 sender_id = 1;
   int64 timestamp = 2;
-  string client_id = 3;
+  int32 client_id = 3;
   OperationResult result = 4;
-
 }

@@ -4,10 +4,25 @@ import com.google.protobuf.Empty;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.example.ClientReply;
+import org.example.ClientRequest;
 import org.example.ClientServiceGrpc;
+import org.example.TPCServer;
 
 public class ClientService extends ClientServiceGrpc.ClientServiceImplBase {
     private static final Logger logger = LogManager.getLogger(ClientService.class);
+
+    private final TPCServer server;
+
+    public ClientService(TPCServer server) {
+        this.server = server;
+    }
+
+    @Override
+    public void request(ClientRequest request, StreamObserver<ClientReply> responseObserver) {
+        logger.info("Received client request: {}", request);
+        server.handleClientRequest(request, responseObserver);
+    }
 
     @Override
     public void ping(Empty request, StreamObserver<Empty> responseObserver) {

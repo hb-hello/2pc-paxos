@@ -1,5 +1,7 @@
 package org.example.statemachine;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.example.BalanceRequest;
 import org.example.Operation;
 import org.example.Transfer;
@@ -28,7 +30,7 @@ public final class StateMachineOperationMapper {
     }
 
     public static StateMachineOperation fromProto(Operation op) {
-        org.apache.logging.log4j.Logger logger = org.apache.logging.log4j.LogManager.getLogger(StateMachineOperationMapper.class);
+        Logger logger = LogManager.getLogger(StateMachineOperationMapper.class);
 //        logger.info("fromProto: Converting operation, opCase: {}", op.getOpCase());
 
         return switch (op.getOpCase()) {
@@ -39,7 +41,7 @@ public final class StateMachineOperationMapper {
                 yield new TransferOp(t.getSender(), t.getReceiver(), t.getAmount());
             }
             case BALANCE_REQUEST -> {
-                String accountId = op.getBalanceRequest().getAccountId();
+                int accountId = op.getBalanceRequest().getAccountId();
 //                logger.info("fromProto: BALANCE_REQUEST - accountId='{}'", accountId);
                 yield new BalanceRequestOp(accountId);
             }

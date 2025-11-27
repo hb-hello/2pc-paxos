@@ -11,7 +11,8 @@ service CLIService {
   rpc SetActiveFlag (ActiveFlag) returns (Acknowledgement) {};
   rpc Reset(google.protobuf.Empty) returns (Acknowledgement) {};
 
-  rpc FailLeader(google.protobuf.Empty) returns (Acknowledgement);
+  rpc FailNode(NodeId) returns (Acknowledgement);
+  rpc RecoverNode(NodeId) returns (Acknowledgement);
 
   rpc GetLog(google.protobuf.Empty) returns (CLIResponse) {};
   rpc GetDB(google.protobuf.Empty) returns (CLIResponse) {};
@@ -35,4 +36,8 @@ message SequenceNumber {
 
 message CLIResponse {
   string cli_response = 1;
+}
+
+message NodeId {
+  int32 node_id = 1;
 }
