@@ -8,25 +8,17 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 
-public class PaxosState {
-    private static final Logger logger = LogManager.getLogger(PaxosState.class);
+public class TPCState {
+    private static final Logger logger = LogManager.getLogger(TPCState.class);
 
     // Executor provided by ExecutorManager (named "state-manager-*" thread)
     private final ExecutorService stateExec;
 
     private final int serverId;
-    private final Ballot ballot;
-    private int leaderId;
-    private Role role;
-    private final OperationLog operationLog;
 
-    public PaxosState(int serverId, ExecutorService stateExec) {
-        this.serverId = serverId;
+    public TPCState(ExecutorService stateExec, int serverId) {
         this.stateExec = stateExec;
-        this.ballot = new Ballot(0, serverId);
-        this.leaderId = -1; // No leader initially
-        this.role = null;
-        this.operationLog = new OperationLog();
+        this.serverId = serverId;
     }
 
     // Core scheduling helpers

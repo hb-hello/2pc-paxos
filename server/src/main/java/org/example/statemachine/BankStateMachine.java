@@ -2,15 +2,12 @@ package org.example.statemachine;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.example.Operation;
-import org.example.OperationResult;
-import org.example.StateMachine;
-import org.example.TPCServer;
+import org.example.*;
 import org.example.persistence.KeyValueStore;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class BankStateMachine implements StateMachine {
 
@@ -20,7 +17,7 @@ public final class BankStateMachine implements StateMachine {
     private final KeyValueStore<Double> database;
 
     public BankStateMachine(KeyValueStore<Double> database) {
-        this.modifiedBalances = new HashMap<>();
+        this.modifiedBalances = new ConcurrentHashMap<>();
         this.database = database;
 //        logger.info("BankStateMachine initialized with balances: {}", this.balances);
     }
@@ -48,7 +45,7 @@ public final class BankStateMachine implements StateMachine {
     }
 
     @Override
-    public OperationResult execute(Operation operation, TPCServer.ExecutionMode mode) {
+    public OperationResult execute(Operation operation, ExecutionMode mode) {
         StateMachineOperation op = StateMachineOperationMapper.fromProto(operation);
 
         return op.accept(new StateMachineOperation.Visitor<>() {

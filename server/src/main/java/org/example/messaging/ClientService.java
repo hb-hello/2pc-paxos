@@ -20,8 +20,9 @@ public class ClientService extends ClientServiceGrpc.ClientServiceImplBase {
 
     @Override
     public void request(ClientRequest request, StreamObserver<ClientReply> responseObserver) {
-        logger.info("Received client request: {}", request);
-        server.handleClientRequest(request, responseObserver);
+        ServerMessage<ClientRequest> message = new ServerMessage<>(request);
+        logger.info("Received client request: {}", message);
+        server.handleClientRequest(message, responseObserver);
     }
 
     @Override

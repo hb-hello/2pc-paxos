@@ -3,6 +3,7 @@ package org.example.consensus.handlers;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.ClientRequest;
+import org.example.messaging.ServerMessage;
 import org.example.state.PaxosState;
 
 public class ClientRequestHandler {
@@ -14,7 +15,7 @@ public class ClientRequestHandler {
         this.state = state;
     }
 
-    public void handle(ClientRequest request) {
-        
+    public void handle(ServerMessage<ClientRequest> request) {
+        logger.info("Handling client request: {}", request.getMessageId());
     }
 }

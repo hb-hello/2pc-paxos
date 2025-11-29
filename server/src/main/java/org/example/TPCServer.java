@@ -6,6 +6,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.messaging.CLIServiceServer;
 import org.example.messaging.ClientService;
+import org.example.messaging.ServerMessage;
 import org.example.messaging.TPCMessageSender;
 import org.example.persistence.KeyValueStore;
 import org.example.statemachine.BankStateMachine;
@@ -18,8 +19,9 @@ public class TPCServer {
 
     private final int serverId;
 
-    private final KeyValueStore<Double> database;
     private final BankStateMachine stateMachine;
+
+    private final ClientRequestTracker clientRequestTracker;
 
     private final CLIServiceServer cliServiceServer;
     private final ClientService clientService;
@@ -30,8 +32,9 @@ public class TPCServer {
     public TPCServer(int serverId, CLIServiceServer cliServiceServer, ExecutorManager executorManager, KeyValueStore<Double> database) {
         this.serverId = serverId;
 
-        this.database = database;
         this.stateMachine = new BankStateMachine(database);
+
+        this.clientRequestTracker = new ClientRequestTracker();
 
         this.paxosServer = new PaxosServer(serverId, executorManager);
         this.cliServiceServer = cliServiceServer;
@@ -58,16 +61,33 @@ public class TPCServer {
         messageSender.setActive(active);
     }
 
-    public void handleClientRequest(ClientRequest request, StreamObserver<ClientReply> responseObserver) {
+    public void handleClientRequest(ServerMessage<ClientRequest> request, StreamObserver<ClientReply> responseObserver) {
+
+        if (clientRequestTracker.hasRequest(request)) {
+            logger.info("Received duplicate client request {}. Checking for stored reply.", request);
+            ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(request);
+            if (replyMessage != null) {
+                logger.info("Found stored reply for duplicate client request {}. Resending reply.", request);
+                responseObserver.onNext(replyMessage.payload());
+                responseObserver.onCompleted();
+            }
+            logger.info("No stored reply found for duplicate client request {}. Ignoring request.", request);
+        } else {
+            clientRequestTracker.addRequest(request);
+            paxosServer.handleClientRequest(request);
+        }
+
+        ClientRequest clientRequest = request.payload();
+
         try {
-            Operation operation = request.getOperation();
+            Operation operation = clientRequest.getOperation();
             OperationResult result = stateMachine.execute(operation, ExecutionMode.BOTH);
 
             ClientReply reply = ClientReply.newBuilder()
                     .setResult(result)
                     .setSenderId(serverId)
-                    .setClientId(request.getClientId())
-                    .setTimestamp(request.getTimestamp())
+                    .setClientId(clientRequest.getClientId())
+                    .setTimestamp(clientRequest.getTimestamp())
                     .build();
 
             logger.info("Server {} executed client request {} with result {} : {}",
@@ -82,11 +102,5 @@ public class TPCServer {
         } catch (Exception e) {
             logger.error("Error executing client request {}: {}", request, e.getMessage());
         }
-    }
-
-    public enum ExecutionMode {
-        BOTH,
-        SENDER,
-        RECEIVER
     }
 }

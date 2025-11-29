@@ -94,7 +94,7 @@ public class ClientNode {
                         .setTransfer(transfer)
                         .build();
 
-                buildAndSendClientRequest(op);
+                buildAndSendClientRequest(op, sender);
                 return;
             } else if (parts.length == 1) {
                 // Single field with comma noise: treat as balance request
@@ -108,7 +108,7 @@ public class ClientNode {
                         .setBalanceRequest(balanceRequest)
                         .build();
 
-                buildAndSendClientRequest(op);
+                buildAndSendClientRequest(op, accountId);
                 return;
             } else {
                 logger.warn("Unrecognized transaction format: {}", raw);
@@ -126,17 +126,17 @@ public class ClientNode {
                     .setBalanceRequest(balanceRequest)
                     .build();
 
-            buildAndSendClientRequest(op);
+            buildAndSendClientRequest(op, accountId);
         }
     }
 
     /**
      * Build the final ClientRequest from an Operation (transfer or balance) and start async send.
      */
-    private void buildAndSendClientRequest(Operation operation) {
+    private void buildAndSendClientRequest(Operation operation, int accountId) {
         ClientRequest request = ClientRequest.newBuilder()
                 .setTimestamp(System.currentTimeMillis()) // client-side timestamp[attached_file:1]
-                .setClientId(clientId)
+                .setClientId(accountId)
                 .setOperation(operation)
                 .build();
 

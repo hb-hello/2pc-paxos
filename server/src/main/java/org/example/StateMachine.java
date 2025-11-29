@@ -7,7 +7,7 @@ public interface StateMachine {
     /**
      * Execute a single deterministic operation and return a proto OperationResult.
      */
-    OperationResult execute(Operation operation, TPCServer.ExecutionMode mode);
+    OperationResult execute(Operation operation, ExecutionMode mode);
 
     /**
      * Consistent snapshot of application state for CLI/inspection.

@@ -1,18 +1,11 @@
 # Directory Structure
 ```
-cli module
-CliMain.java
-ServerManager.java
-messageing/
-    CLIMessageSender.java
-    CLIServiceClient.java
+proto/
+  cli.proto
+  paxos.proto
+  client.proto
 
-proto files
-cli.proto
-paxos.proto
-client.proto
-
-common module
+common/
 example/
   config/
     Config.java
@@ -21,264 +14,61 @@ example/
   messaging/
     StubManager.java
     MessageSender.java
+    ServerMessage.java
     ChannelManager.java
     MessageReceiver.java
+    MessageIndexHelper.java
+    ServerMessageFormatter.java
     ServerActivityInterceptor.java
+  persistence/
+    KeyValueStore.java
+    DatabaseManager.java
+    NitriteKeyValueStore.java
+    ChronicleKeyValueStore.java
+  statemachine/
+    Account.java
+    TransferOp.java
+    BalanceRequestOp.java
+    StateMachineOperation.java
+    StateMachineOperationMapper.java
+    StateMachineOperationResult.java
+    StateMachineOperationResultMapper.java
   ExecutorManager.java
 
-server module
+
+paxos/
+example/
+  state/
+    Role.java
+    Ballot.java
+    PaxosState.java
+    OperationLog.java
+    OperationStatus.java
+    OperationLogEntry.java
+  consensus/
+    handlers/
+      ClientRequestHandler.java
+  messaging/
+    PaxosService.java
+    PaxosMessageSender.java
+  PaxosServer.java
+
+
+server/
 example/
   messaging/
     ClientService.java
     CLIServiceServer.java
     TPCMessageSender.java
+  statemachine/
+    BankStateMachine.java
   TPCServer.java
   ServerMain.java
+  StateMachine.java
 ```
 
 # File Contents
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/cli/src/main/java/org/example/CliMain.java
-```java
-package org.example;
-
-import org.example.config.Config;
-import org.example.messaging.CLIMessageSender;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LoggerContext;
-
-import java.io.File;
-import java.io.IOException;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.Scanner;
-import java.util.concurrent.Executors;
-
-public class CliMain {
-
-    public static void activateAllServers(CLIMessageSender cliMessageSender) {
-        try {
-            System.out.println("Waiting briefly before activating all servers for client warmup...");
-            Thread.sleep(500); // brief pause to ensure any prior operations have settled
-            for (int i = 1; i <= Config.getServerCount(); i++) {
-                try {
-                    cliMessageSender.sendActiveFlag(i, true);
-                } catch (Exception e) {
-                    System.out.println("Warning: failed to activate server " + i + " " + e.getMessage());
-                }
-            }
-//            System.out.println("Resetting all servers before client warmup...");
-            // Activate all known servers so clients can warm connections to all of them
-            System.out.println("Server reset/activation complete.");
-        } catch (Exception e) {
-            System.out.println("Warning: failed to reset/activate servers before warmup: " + e.getMessage());
-        }
-    }
-
-    public static void main(String[] args) {
-        // Initialize config first so we know settings if needed
-        Config.initialize();
-
-        // Set up a CLI-specific log file path BEFORE any class that uses LogManager is loaded.
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss.SSS"));
-        String cliLogPath = "logs/cli/log-" + timestamp + ".log";
-        System.setProperty("cliLogPath", cliLogPath);
-
-        // Ensure parent directory exists
-        File parent = new File(cliLogPath).getParentFile();
-        if (parent != null && !parent.exists()) {
-            try {
-                java.nio.file.Files.createDirectories(parent.toPath());
-            } catch (IOException ioe) {
-                System.err.println("Failed to create CLI log directory '" + parent.getAbsolutePath() + "': " + ioe.getMessage());
-            }
-        }
-
-        // Reconfigure Log4j2 to pick up the CLI log path before any static loggers are initialized
-        LoggerContext context = (LoggerContext) LogManager.getContext(false);
-        context.reconfigure();
-
-        try {
-            ServerManager.startAllServers(Config.getServerExecutablePath(), Config.getServerCount());
-
-            // this calls the warmup action
-
-            CLIMessageSender cliMessageSender = new CLIMessageSender(0, Executors.newSingleThreadExecutor());
-
-            try {
-                Thread.sleep(1000); // wait a bit for processes to start
-
-                //potentially start receiver server
-                Thread.sleep(1000); // wait a bit for GRPC servers to start
-                cliMessageSender.warmup();
-
-                activateAllServers(cliMessageSender);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
-        int next = 0;
-        Scanner sc = new Scanner(System.in);
-
-        while (true) {
-            System.out.println();
-            System.out.println("Options:");
-            System.out.println(" 1 - PrintDB");
-            System.out.println(" 2 - PrintLog");
-            System.out.println(" 3 - PrintStatus");
-            System.out.println(" 4 - PrintView");
-            System.out.println(" 5 - Continue with next set (#" + (next + 1) + ")");
-            System.out.println(" 6 - DEBUG: PrintOperationLog");
-            System.out.println(" 7 - DEBUG: Pause/Resume client (pause a client to inspect logs/db)");
-            System.out.println(" 8 - DEBUG: Choose next set number");
-            System.out.println(" 0 - Exit");
-            System.out.print("Choice: ");
-            String choice = sc.nextLine().trim();
-
-            switch (choice) {
-                case "1" -> System.out.println("Printing DB contents from all servers:");
-                case "0" -> {
-                    System.out.println("Exiting...");
-                    return;
-                }
-                default -> System.out.println("Unknown choice.");
-            }
-        }
-    }
-}
-```
-
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/cli/src/main/java/org/example/ServerManager.java
-```java
-package org.example;
-
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-
-public class ServerManager {
-    private static final List<Process> processes = new ArrayList<>();
-
-    public static void startAllServers(String jarPath, int numServers) throws IOException {
-        for (int i = 1; i <= numServers; i++) {
-            // Include the protobuf JVM compatibility flag and the add-opens option when launching child JVMs
-            ProcessBuilder pb = new ProcessBuilder(
-                    "java",
-                    "--add-opens=java.base/sun.misc=ALL-UNNAMED",
-                    "-Dcom.google.protobuf.use_unsafe_pre22_gencode=true",
-                    "-jar",
-                    jarPath,
-                    String.valueOf(i)
-            );
-            pb.inheritIO();
-            Process process = pb.start();
-            processes.add(process);
-            System.out.println("Started server " + i);
-        }
-
-        // Register shutdown hook to ensure launched server processes are terminated on JVM exit
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try {
-                shutdownAllServers();
-            } catch (Exception e) {
-                System.err.println("Error shutting down servers in shutdown hook: " + e.getMessage());
-            }
-        }));
-    }
-
-    public static void shutdownAllServers() {
-        for (int i = 0; i < processes.size(); i++) {
-            Process process = processes.get(i);
-            if (process.isAlive()) {
-                process.destroy();
-                System.out.println("Shut down server " + (i + 1));
-            }
-        }
-        processes.clear();
-    }
-}
-
-```
-
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/cli/src/main/java/org/example/messaging/CLIMessageSender.java
-```java
-package org.example.messaging;
-
-import com.google.common.util.concurrent.ListenableFuture;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-import org.example.*;
-
-import java.util.concurrent.ExecutorService;
-
-public class CLIMessageSender extends MessageSender {
-    private static final Logger logger = LogManager.getLogger(CLIMessageSender.class);
-
-    private final ExecutorService networkExecutor;
-
-    public CLIMessageSender(int clientId, ExecutorService networkExecutor) {
-        super(clientId, networkExecutor);
-        this.networkExecutor = networkExecutor;
-    }
-
-    public void sendClientRequest(int targetServerId, ClientRequest request) {
-        ensureActive();
-        ClientServiceGrpc.ClientServiceFutureStub stub = stubManager.getClientStub(targetServerId);
-        ListenableFuture<ClientReply> replyFuture  = stub.request(request);
-        replyFuture.addListener(() -> {
-            try {
-                ClientReply reply = replyFuture.get();
-                logger.info("Received reply from server {}: {}", targetServerId, reply);
-            } catch (Exception e) {
-                logger.error("Failed to get reply from server {}", targetServerId, e);
-            }
-        }, networkExecutor);
-    }
-
-    public void sendActiveFlag(int targetServerId, boolean isActive) {
-        ensureActive();
-        CLIServiceGrpc.CLIServiceBlockingStub stub = stubManager.getCLIBlockingStub(targetServerId);
-        ActiveFlag activeFlag = ActiveFlag.newBuilder()
-                .setActiveFlag(isActive)
-                .build();
-        Acknowledgement ack = stub.setActiveFlag(activeFlag);
-        if (ack.getStatus()) {
-            logger.info("Server {} acknowledged active flag {}", targetServerId, isActive);
-        } else {
-            throw new RuntimeException("Server " + targetServerId + " did not acknowledge active flag " + isActive);
-        }
-    }
-}
-
-```
-
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/cli/src/main/java/org/example/messaging/CLIServiceClient.java
-```java
-package org.example.messaging;
-
-import com.google.protobuf.Empty;
-import io.grpc.stub.StreamObserver;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-import org.example.CLIServiceGrpc;
-
-public class CLIServiceClient extends CLIServiceGrpc.CLIServiceImplBase {
-    private static final Logger logger = LogManager.getLogger(CLIServiceClient.class);
-
-    @Override
-    public void ping(Empty request, StreamObserver<Empty> responseObserver) {
-        logger.debug("Received ping request");
-        responseObserver.onNext(Empty.newBuilder().build());
-        responseObserver.onCompleted();
-    }
-}
-
-```
-
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/src/main/proto/cli.proto
+## File: /tpc-paxos/repos/2pc-paxos/src/main/proto/cli.proto
 ```protobuf
 syntax = "proto3";
 
@@ -291,8 +81,10 @@ option java_multiple_files = true;
 
 service CLIService {
   rpc SetActiveFlag (ActiveFlag) returns (Acknowledgement) {};
+  rpc Reset(google.protobuf.Empty) returns (Acknowledgement) {};
 
-  rpc FailLeader(google.protobuf.Empty) returns (Acknowledgement);
+  rpc FailNode(NodeId) returns (Acknowledgement);
+  rpc RecoverNode(NodeId) returns (Acknowledgement);
 
   rpc GetLog(google.protobuf.Empty) returns (CLIResponse) {};
   rpc GetDB(google.protobuf.Empty) returns (CLIResponse) {};
@@ -317,9 +109,13 @@ message SequenceNumber {
 message CLIResponse {
   string cli_response = 1;
 }
+
+message NodeId {
+  int32 node_id = 1;
+}
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/src/main/proto/paxos.proto
+## File: /tpc-paxos/repos/2pc-paxos/src/main/proto/paxos.proto
 ```protobuf
 syntax="proto3";
 
@@ -344,7 +140,7 @@ service PaxosService {
 
 message Ballot {
   int64 instance = 1;
-  string sender_id = 2;
+  int32 sender_id = 2;
 }
 
 // Prepare phase
@@ -355,26 +151,30 @@ message PrepareMessage {
 message PromiseMessage {
   Ballot ballot = 1;
   repeated AcceptMessage accept_log = 2;
-  string sender_id = 3;
+  int32 sender_id = 3;
 }
 
 // Accept phase
+
+enum tpc_phase {
+  PREPARE = 0;
+  COMMIT = 1;
+  ABORT = 2;
+}
+
 message AcceptMessage {
   Ballot ballot = 1;
   int64 sequence_number = 2;
-  enum tpc_phase {
-    PREPARE = 0;
-    COMMIT = 1;
-    ABORT = 2;
-  }
+  tpc_phase phase = 3;
   ClientRequest request = 4;
 }
 
 message AcceptedMessage {
   Ballot ballot = 1;
   int64 sequence_number = 2;
-  ClientRequest request = 3;
-  string sender_id = 4;
+  tpc_phase phase = 3;
+  ClientRequest request = 4;
+  int32 sender_id = 5;
 }
 
 message NewViewMessage {
@@ -386,7 +186,8 @@ message NewViewMessage {
 message CommitMessage {
   Ballot ballot = 1;
   int64 sequence_number = 2;
-  ClientRequest request = 3;
+  tpc_phase phase = 3;
+  ClientRequest request = 4;
 }
 
 message CheckpointMessage {
@@ -401,7 +202,7 @@ message StateMessage {
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/src/main/proto/client.proto
+## File: /tpc-paxos/repos/2pc-paxos/src/main/proto/client.proto
 ```protobuf
 syntax = "proto3";
 
@@ -421,13 +222,13 @@ service ClientService {
 
 // Core operation definitions
 message Transfer {
-  string sender = 1;
-  string receiver = 2;
+  int32 sender = 1;
+  int32 receiver = 2;
   double amount = 3;
 }
 
 message BalanceRequest {
-  string account_id = 1;
+  int32 account_id = 1;
 }
 
 message Operation {
@@ -448,20 +249,20 @@ message OperationResult {
 message ClientRequest {
   int64 timestamp = 1;
   Operation operation = 2;
-  string client_id = 3;
+  int32 client_id = 3;
+  bool is_read_only = 4;
 }
 
 message ClientReply {
-  string sender_id = 1;
+  int32 sender_id = 1;
   int64 timestamp = 2;
-  string client_id = 3;
+  int32 client_id = 3;
   OperationResult result = 4;
-
 }
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/config/Config.java
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/config/Config.java
 ```java
 package org.example.config;
 
@@ -693,7 +494,7 @@ public class Config {
 }
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/config/NodeDetails.java
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/config/NodeDetails.java
 ```java
 package org.example.config;
 
@@ -702,7 +503,7 @@ public record NodeDetails(int id, String host, int port) {
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/Main.java
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/Main.java
 ```java
 package org.example;
 
@@ -723,7 +524,7 @@ public class Main {
 }
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/StubManager.java
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/StubManager.java
 ```java
 package org.example.messaging;
 
@@ -919,7 +720,7 @@ public class StubManager {
                                 .ping(Empty.getDefaultInstance());
                         logger.debug("Warmup CLI ping successful to node {}", nodeId);
                     } catch (Exception e) {
-                        logger.warn("Warmup ping to node {} CLI stub failed: {}", nodeId, e.getMessage());
+                        logger.debug("Warmup ping to node {} CLI stub failed: {}", nodeId, e.getMessage());
                     }
                     try {
                         Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
@@ -939,7 +740,7 @@ public class StubManager {
                                 .ping(Empty.getDefaultInstance());
                         logger.debug("Warmup Paxos ping successful to node {}", nodeId);
                     } catch (Exception e) {
-                        logger.warn("Warmup ping to node {} Paxos stub failed: {}", nodeId, e.getMessage());
+                        logger.debug("Warmup ping to node {} Paxos stub failed: {}", nodeId, e.getMessage());
                     }
                     try {
                         Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
@@ -959,7 +760,7 @@ public class StubManager {
                                 .ping(Empty.getDefaultInstance());
                         logger.debug("Warmup Client ping successful to node {}", nodeId);
                     } catch (Exception e) {
-                        logger.warn("Warmup ping to node {} Client stub failed: {}", nodeId, e.getMessage());
+                        logger.debug("Warmup ping to node {} Client stub failed: {}", nodeId, e.getMessage());
                     }
                     try {
                         Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
@@ -985,7 +786,7 @@ public class StubManager {
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/MessageSender.java
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/MessageSender.java
 ```java
 package org.example.messaging;
 
@@ -1029,10 +830,11 @@ public class MessageSender {
     }
 
     public void warmup() {
-        logger.info("Waiting for everyone to start up...");
+        logger.debug("Waiting for everyone to start up...");
         try {
-            Thread.sleep(100);
+            Thread.sleep(300);
             stubManager.warmup();
+            System.out.println("All nodes are up and running.");
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
@@ -1040,7 +842,54 @@ public class MessageSender {
 }
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/ChannelManager.java
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/ServerMessage.java
+```java
+package org.example.messaging;
+
+import com.google.protobuf.MessageLite;
+import java.util.Objects;
+
+public final class ServerMessage {
+
+    private final MessageLite payload;
+    private final String messageIndex;
+    private final String messageId;
+
+    public ServerMessage(MessageLite payload) {
+        this.payload = Objects.requireNonNull(payload, "payload");
+        this.messageIndex = MessageIndexHelper.computeIndex(payload);
+        int senderId = MessageIndexHelper.extractSenderId(payload);
+        this.messageId = (senderId != -1)
+                ? messageIndex + "|" + senderId
+                : messageIndex;
+    }
+
+    public MessageLite payload() {
+        return payload;
+    }
+
+    public String getMessageIndex() {
+        return messageIndex;
+    }
+
+    public String getMessageId() {
+        return messageId;
+    }
+
+    @Override
+    public String toString() {
+        // Plug in your formatter as requested
+        return "\nServerMessage{" +
+                "\nid=" + messageId +
+                ",\nindex=" + messageIndex +
+                ",\npayload=" + ServerMessageFormatter.format(payload) +
+                "}";
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/ChannelManager.java
 ```java
 package org.example.messaging;
 
@@ -1053,7 +902,6 @@ import org.example.config.NodeDetails;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -1154,7 +1002,7 @@ public class ChannelManager {
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/MessageReceiver.java
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/MessageReceiver.java
 ```java
 package org.example.messaging;
 
@@ -1252,7 +1100,183 @@ public class MessageReceiver {
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/ServerActivityInterceptor.java
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/MessageIndexHelper.java
+```java
+package org.example.messaging;
+
+import com.google.protobuf.MessageLite;
+import org.example.*;
+
+public final class MessageIndexHelper {
+
+    private MessageIndexHelper() {}
+
+    public static String computeIndex(MessageLite msg) {
+        if (msg instanceof ClientRequest cr) {
+            return clientRequestIndex(cr);
+        }
+        if (msg instanceof AcceptMessage am) {
+            return paxosIndex(
+                    am.getBallot().getInstance(),
+                    am.getBallot().getSenderId(),
+                    am.getSequenceNumber(),
+                    am.getPhase().name()
+            );
+        }
+        if (msg instanceof AcceptedMessage am) {
+            return paxosIndex(
+                    am.getBallot().getInstance(),
+                    am.getBallot().getSenderId(),
+                    am.getSequenceNumber(),
+                    am.getPhase().name()
+            );
+        }
+        if (msg instanceof CommitMessage cm) {
+            return paxosIndex(
+                    cm.getBallot().getInstance(),
+                    cm.getBallot().getSenderId(),
+                    cm.getSequenceNumber(),
+                    cm.getPhase().name()
+            );
+        }
+        if (msg instanceof PrepareMessage pm) {
+            return pm.getBallot().getInstance() + ":" + pm.getBallot().getSenderId();
+        }
+        if (msg instanceof PromiseMessage pm) {
+            return pm.getBallot().getInstance() + ":" + pm.getSenderId();
+        }
+
+        // Future tpc.proto messages go here:
+        // if (msg instanceof TpcPrepareMessage t) { ... }
+
+        // Generic fallback: still stable per-process for debugging, but not for protocol logic.
+        return msg.getClass().getSimpleName() + ":" + msg.hashCode();
+    }
+
+    public static int extractSenderId(MessageLite msg) {
+        if (msg instanceof PromiseMessage pm) {
+            return pm.getSenderId();
+        }
+        if (msg instanceof AcceptedMessage am) {
+            return am.getSenderId();
+        }
+        return -1;
+    }
+
+    private static String clientRequestIndex(ClientRequest cr) {
+        return cr.getClientId() + ":" + cr.getTimestamp();
+    }
+
+    private static String paxosIndex(long instance, int senderId,
+                                     long seq, String phaseName) {
+        return instance + ":" + senderId + ":" + seq + ":" + phaseName;
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/ServerMessageFormatter.java
+```java
+package org.example.messaging;
+
+import com.google.protobuf.MessageLite;
+import org.example.*;  // PrepareMessage, PromiseMessage, AcceptMessage, CommitMessage, ClientRequest, ClientReply, etc. [attached_file:1]
+
+public final class ServerMessageFormatter {
+
+    private ServerMessageFormatter() {}
+
+    public static String format(MessageLite msg) {
+        if (msg instanceof PrepareMessage m) {
+            return formatPrepare(m);
+        } else if (msg instanceof PromiseMessage m) {
+            return formatPromise(m);
+        } else if (msg instanceof AcceptMessage m) {
+            return formatAccept(m);
+        } else if (msg instanceof CommitMessage m) {
+            return formatCommit(m);
+        } else if (msg instanceof ClientRequest m) {
+            return formatClientRequest(m);
+        } else if (msg instanceof ClientReply m) {
+            return formatClientReply(m);
+        }
+        // When tpc.proto exists, add:
+        // else if (msg instanceof TpcPrepareMessage m) { ... }
+
+        // Fallback: protobuf's own toString if you ever need it for debugging
+        return msg.toString();
+    }
+
+    private static String formatPrepare(PrepareMessage m) {
+        return "Prepare{instance=" + m.getBallot().getInstance() +
+                ", sender=" + m.getBallot().getSenderId() +
+                "}";
+    }
+
+    private static String formatPromise(PromiseMessage m) {
+        return "Promise{instance=" + m.getBallot().getInstance() +
+                ", sender=" + m.getSenderId() +
+                ", acceptLogSize=" + m.getAcceptLogCount() +
+                "}";
+    }
+
+    private static String txIDFromRequest(ClientRequest req) {
+        return req.getClientId() + ":" + req.getTimestamp();
+    }
+
+    private static String formatAccept(AcceptMessage m) {
+        return "Accept{instance=" + m.getBallot().getInstance() +
+                ", seq=" + m.getSequenceNumber() +
+                ", phase=" + m.getPhase().name() +
+                ", txId=" + txIDFromRequest(m.getRequest()) +
+                "}";
+    }
+
+    private static String formatAccepted(AcceptedMessage m) {
+        int clientId = m.getRequest().getClientId();
+        return "Accepted{instance=" + m.getBallot().getInstance() +
+                ", seq=" + m.getSequenceNumber() +
+                ", phase=" + m.getPhase().name() +
+                ", txId=" + txIDFromRequest(m.getRequest()) +
+                "}";
+    }
+
+    private static String formatCommit(CommitMessage m) {
+        return "Commit{instance=" + m.getBallot().getInstance() +
+                ", seq=" + m.getSequenceNumber() +
+                ", phase=" + m.getPhase().name() +
+                ", txId=" + txIDFromRequest(m.getRequest()) +
+                "}";
+    }
+
+    private static String formatClientRequest(ClientRequest m) {
+        String opType = m.getOperation().hasTransfer() ? "TRANSFER" : "BALANCE";
+        return "ClientRequest{clientId=" + m.getClientId() +
+                ", ts=" + m.getTimestamp() +
+                ", op=" + opType +
+                "}";
+    }
+
+    private static String formatClientReply(ClientReply m) {
+        String result;
+        if (m.getResult().hasSuccess()) {
+            result = "success=" + m.getResult().getSuccess();
+        } else if (m.getResult().hasBalance()) {
+            result = "balance=" + m.getResult().getBalance();
+        } else {
+            result = "emptyResult";
+        }
+        return "ClientReply{clientId=" + m.getClientId() +
+                ", sender=" + m.getSenderId() +
+                ", ts=" + m.getTimestamp() +
+                ", " + result +
+                "}";
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/messaging/ServerActivityInterceptor.java
 ```java
 package org.example.messaging;
 
@@ -1281,6 +1305,7 @@ public class ServerActivityInterceptor implements ServerInterceptor {
             "org.example.CLIService/Reset",
             "org.example.CLIService/Crash",
             "org.example.CLIService/Ping",
+            "org.example.ClientService/Ping",
             "org.example.PaxosService/Ping"
     );
 
@@ -1319,7 +1344,523 @@ public class ServerActivityInterceptor implements ServerInterceptor {
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/ExecutorManager.java
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/persistence/KeyValueStore.java
+```java
+package org.example.persistence;
+
+import java.util.List;
+import java.util.Map;
+
+public interface KeyValueStore<T> {
+    void put(int id, T entry);
+    T get(int key);
+    void delete(int key);
+    void putAll(Map<Integer, T> entries);
+    void close();
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/persistence/DatabaseManager.java
+```java
+package org.example.persistence;
+
+public class DatabaseManager {
+    public static KeyValueStore<Double> create(int nodeId) {
+        return new ChronicleKeyValueStore<>(nodeId, Double.class);
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/persistence/NitriteKeyValueStore.java
+```java
+package org.example.persistence;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.dizitart.no2.Nitrite;
+import org.dizitart.no2.collection.NitriteCollection;
+import org.dizitart.no2.exceptions.UniqueConstraintException;
+import org.dizitart.no2.exceptions.ValidationException;
+import org.dizitart.no2.mvstore.MVStoreModule;
+import org.dizitart.no2.repository.ObjectRepository;
+import org.dizitart.no2.index.IndexType;
+
+import java.util.Map;
+
+public class NitriteKeyValueStore<T> implements KeyValueStore<T> {
+    private static final Logger logger = LogManager.getLogger(NitriteKeyValueStore.class);
+
+    private final int nodeId;
+    private final String indexFieldName;
+    private final Class<T> entityClass;
+    private Nitrite db;
+    private ObjectRepository<T> repository;
+
+    public NitriteKeyValueStore(int nodeId, String indexFieldName, Class<T> entityClass) {
+        this.nodeId = nodeId;
+        this.indexFieldName = indexFieldName;
+        this.entityClass = entityClass;
+        try {
+            build();
+        } catch (Exception e) {
+            logger.error("Failed to initialize NitriteKeyValueStore for node {}: {}", nodeId, e.getMessage());
+        }
+    }
+
+    private void build() {
+        // Initialize Nitrite database
+        String dbPath = "data/server-" + nodeId + ".db";
+
+        MVStoreModule storeModule = MVStoreModule.withConfig()
+                .filePath(dbPath)
+                .autoCommit(false)
+                .build();
+
+        this.db = Nitrite.builder()
+                .loadModule(storeModule)
+                .openOrCreate();
+
+        // Create an object repository for the provided entity class
+        this.repository = db.getRepository(entityClass);
+
+        // Also ensure the underlying collection has a UNIQUE index on the configured field.
+        try {
+            String collectionName = entityClass.getSimpleName();
+            NitriteCollection collection = db.getCollection(collectionName);
+            collection.createIndex(indexFieldName, IndexType.UNIQUE);
+        } catch (Exception e) {
+            // If index creation fails, log and continue — repository may still be usable depending on schema
+            logger.warn("Failed to create unique index '{}' on repository {}: {}", indexFieldName, entityClass.getName(), e.getMessage());
+        }
+    }
+
+    @Override
+    public void put(int id, T entry) {
+        try {
+            repository.update(entry, true);
+        } catch (ValidationException e) {
+            logger.error("Validation error (null check) when inserting entry into repository {}: {}", entityClass.getName(), e.getMessage());
+        } catch (UniqueConstraintException e) {
+            logger.error("Unique constraint violation when inserting entry into repository {}: {}", entityClass.getName(), e.getMessage());
+        }
+    }
+
+    @Override
+    public T get(int key) {
+        try {
+            return repository.getById(key);
+        } catch (Exception e) {
+            logger.error("Error retrieving entry with key {} from repository {}: {}", key, entityClass.getName(), e.getMessage());
+            return null;
+        }
+    }
+
+    @Override
+    public void delete(int key) {
+        try {
+            repository.remove(org.dizitart.no2.filters.FluentFilter.where(indexFieldName).eq(key));
+        } catch (Exception e) {
+            logger.error("Error deleting entry with key {} from repository {}: {}", key, entityClass.getName(), e.getMessage());
+        }
+    }
+
+    @Override
+    public void putAll(Map<Integer, T> entries) {
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<Integer, T> en : entries.entrySet()) {
+            T entry = en.getValue();
+            try {
+                repository.update(entry, true);
+            } catch (Exception ex) {
+                logger.warn("Failed to put entry with id {} into repository {}: {}", en.getKey(), entityClass.getName(), ex.getMessage());
+            }
+        }
+    }
+
+    @Override
+    public void close() {
+        try {
+            if (db != null && !db.isClosed()) {
+                db.commit();
+                db.close();
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to commit/close Nitrite DB for node {}: {}", nodeId, e.getMessage());
+        } finally {
+            repository = null;
+        }
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/persistence/ChronicleKeyValueStore.java
+```java
+package org.example.persistence;
+
+import net.openhft.chronicle.map.ChronicleMap;
+import net.openhft.chronicle.map.ChronicleMapBuilder;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.Map;
+
+public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
+    private static final Logger logger = LogManager.getLogger(ChronicleKeyValueStore.class);
+
+    private final int nodeId;
+    private final Class<T> valueClass;
+    private ChronicleMap<Integer, T> map;
+
+    public ChronicleKeyValueStore(int nodeId, Class<T> valueClass) {
+        this.nodeId = nodeId;
+        this.valueClass = valueClass;
+        try {
+            build();
+        } catch (Exception e) {
+            logger.error("Failed to initialize ChronicleKeyValueStore for node {}: {}", nodeId, e.getMessage());
+        }
+    }
+
+    private void build() throws IOException {
+        File file = new File("data/chronicle-node-" + nodeId + ".dat");
+
+        ChronicleMapBuilder<Integer, T> builder = ChronicleMapBuilder
+                .of(Integer.class, valueClass)
+                .name("kv-store-node-" + nodeId)
+                .entries(10_000)
+                .constantKeySizeBySample(0)
+                .constantValueSizeBySample(createSampleValue());
+
+        if (!file.exists()) {
+            file.getParentFile().mkdirs();
+            file.createNewFile();
+        }
+
+        this.map = builder.createPersistedTo(file);
+    }
+
+    @Override
+    public void put(int key, T entry) {
+        try {
+            map.put(key, entry);
+        } catch (Exception e) {
+            logger.error("Error putting entry into Chronicle map: {}", e.getMessage());
+        }
+    }
+
+    @Override
+    public T get(int key) {
+        try {
+            return map.get(key);
+        } catch (Exception e) {
+            logger.error("Error getting entry with key {} from Chronicle map: {}", key, e.getMessage());
+            return null;
+        }
+    }
+
+    @Override
+    public void delete(int key) {
+        try {
+            map.remove(key);
+        } catch (Exception e) {
+            logger.error("Error deleting entry with key {} from Chronicle map: {}", key, e.getMessage());
+        }
+    }
+
+    @Override
+    public void putAll(Map<Integer, T> entries) {
+        try {
+            map.putAll(entries);
+        } catch (Exception e) {
+            logger.error("Error putting all entries into Chronicle map: {}", e.getMessage());
+        }
+    }
+
+    @Override
+    public void close() {
+        try {
+            if (map != null) {
+                map.close();
+            }
+        } catch (Exception e) {
+            logger.warn("Error closing Chronicle map for node {}: {}", nodeId, e.getMessage());
+        }
+    }
+
+    public T createSampleValue() {
+        try {
+            // handle common Java wrapper types and String
+            if (valueClass == Double.class) {
+                return valueClass.cast(0.0d);
+            }
+            if (valueClass == Integer.class) {
+                return valueClass.cast(0);
+            }
+            if (valueClass == Long.class) {
+                return valueClass.cast(0L);
+            }
+            if (valueClass == Float.class) {
+                return valueClass.cast(0.0f);
+            }
+            if (valueClass == Byte.class) {
+                return valueClass.cast((byte) 0);
+            }
+            if (valueClass == Boolean.class) {
+                return valueClass.cast(false);
+            }
+            if (valueClass == Character.class) {
+                return valueClass.cast('\0');
+            }
+            if (valueClass == String.class) {
+                return valueClass.cast("");
+            }
+            // enums: pick first constant if available
+            if (valueClass.isEnum()) {
+                Object[] consts = valueClass.getEnumConstants();
+                if (consts != null && consts.length > 0) {
+                    return valueClass.cast(consts[0]);
+                }
+            }
+            // fallback to no-arg constructor
+            return valueClass.getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create sample value for ChronicleMap sizing", e);
+        }
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/statemachine/Account.java
+```java
+package org.example.statemachine;
+
+import org.dizitart.no2.repository.annotations.Entity;
+import org.dizitart.no2.repository.annotations.Id;
+
+@Entity
+public class Account {
+    @Id
+    private int accountId;
+    private double balance;
+
+    public Account(int accountId, double balance) {
+        this.accountId = accountId;
+        this.balance = balance;
+    }
+
+    public int getAccountId() {
+        return accountId;
+    }
+
+    public void setAccountId(int accountId) {
+        this.accountId = accountId;
+    }
+
+    public double getBalance() {
+        return balance;
+    }
+
+    public void setBalance(double balance) {
+        this.balance = balance;
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/statemachine/TransferOp.java
+```java
+package org.example.statemachine;
+
+/**
+ * Concrete Transfer operation: corresponds to the Transfer message in the proto.
+ */
+public record TransferOp(int sender, int receiver, double amount) implements StateMachineOperation {}
+
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/statemachine/BalanceRequestOp.java
+```java
+package org.example.statemachine;
+
+/**
+ * Concrete BalanceRequest operation: corresponds to the BalanceRequest message in the proto.
+ */
+public record BalanceRequestOp(int accountId) implements StateMachineOperation { }
+
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/statemachine/StateMachineOperation.java
+```java
+package org.example.statemachine;
+
+/**
+ * Sealed hierarchy mirroring the Operation oneof in the proto: either a Transfer or a BalanceRequest.
+ * This avoids a manual discriminator enum and enables exhaustive switches.
+ */
+public sealed interface StateMachineOperation permits TransferOp, BalanceRequestOp {
+
+    /** Simple visitor for exhaustive handling without instanceof checks. */
+    interface Visitor<StateMachineOperationResult> {
+        StateMachineOperationResult onTransfer(int sender, int receiver, double amount);
+        StateMachineOperationResult onBalanceRequest(int accountId);
+    }
+
+    /**
+     * Dispatch to the appropriate visitor method using sealed-pattern matching.
+     */
+    default <R> R accept(Visitor<R> visitor) {
+        return switch (this) {
+            case TransferOp t -> visitor.onTransfer(t.sender(), t.receiver(), t.amount());
+            case BalanceRequestOp b -> visitor.onBalanceRequest(b.accountId());
+        };
+    }
+
+    // Optional convenience factories
+    static StateMachineOperation transfer(int sender, int receiver, double amount) {
+        return new TransferOp(sender, receiver, amount);
+    }
+
+    static StateMachineOperation balanceRequest(int accountId) {
+        return new BalanceRequestOp(accountId);
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/statemachine/StateMachineOperationMapper.java
+```java
+package org.example.statemachine;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.BalanceRequest;
+import org.example.Operation;
+import org.example.Transfer;
+
+/**
+ * Utility for converting between sealed StateMachineOperation values and protobuf Operation messages.
+ */
+public final class StateMachineOperationMapper {
+    private StateMachineOperationMapper() {}
+
+    public static Operation toProto(StateMachineOperation op) {
+        return switch (op) {
+            case TransferOp t -> Operation.newBuilder()
+                    .setTransfer(Transfer.newBuilder()
+                            .setSender(t.sender())
+                            .setReceiver(t.receiver())
+                            .setAmount(t.amount())
+                            .build())
+                    .build();
+            case BalanceRequestOp b -> Operation.newBuilder()
+                    .setBalanceRequest(BalanceRequest.newBuilder()
+                            .setAccountId(b.accountId())
+                            .build())
+                    .build();
+        };
+    }
+
+    public static StateMachineOperation fromProto(Operation op) {
+        Logger logger = LogManager.getLogger(StateMachineOperationMapper.class);
+//        logger.info("fromProto: Converting operation, opCase: {}", op.getOpCase());
+
+        return switch (op.getOpCase()) {
+            case TRANSFER -> {
+                var t = op.getTransfer();
+//                logger.info("fromProto: TRANSFER - sender='{}', receiver='{}', amount={}",
+//                    t.getSender(), t.getReceiver(), t.getAmount());
+                yield new TransferOp(t.getSender(), t.getReceiver(), t.getAmount());
+            }
+            case BALANCE_REQUEST -> {
+                int accountId = op.getBalanceRequest().getAccountId();
+//                logger.info("fromProto: BALANCE_REQUEST - accountId='{}'", accountId);
+                yield new BalanceRequestOp(accountId);
+            }
+            case OP_NOT_SET -> {
+//                logger.error("fromProto: Operation.oneof 'op' not set");
+                throw new IllegalArgumentException("Operation.oneof 'op' not set");
+            }
+        };
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/statemachine/StateMachineOperationResult.java
+```java
+package org.example.statemachine;
+
+/**
+ * Simpler alternative to the sealed OperationResult hierarchy: a single record
+ * with exactly one of 'success' (boolean) or 'balance' (double) present.
+ */
+public record StateMachineOperationResult(Boolean success, Double balance) {
+    public StateMachineOperationResult {
+        // Exactly one must be non-null
+        if ((success == null) == (balance == null)) {
+            throw new IllegalArgumentException("Exactly one of 'success' or 'balance' must be set");
+        }
+    }
+
+    public static StateMachineOperationResult success(boolean value) {
+        return new StateMachineOperationResult(value, null);
+    }
+
+    public static StateMachineOperationResult balance(double value) {
+        return new StateMachineOperationResult(null, value);
+    }
+
+    public boolean isSuccess() { return success != null; }
+    public boolean isBalance() { return balance != null; }
+}
+
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/statemachine/StateMachineOperationResultMapper.java
+```java
+package org.example.statemachine;
+
+import org.example.OperationResult;
+
+public final class StateMachineOperationResultMapper {
+    private StateMachineOperationResultMapper() {}
+
+    public static OperationResult toProto(StateMachineOperationResult result) {
+        var builder = OperationResult.newBuilder();
+        if (result.isSuccess()) {
+            builder.setSuccess(result.success());
+        } else if (result.isBalance()) {
+            builder.setBalance(result.balance());
+        } else {
+            throw new IllegalArgumentException("SimpleOperationResult must have exactly one branch set");
+        }
+        return builder.build();
+    }
+
+    public static StateMachineOperationResult fromProto(OperationResult proto) {
+        return switch (proto.getResultCase()) {
+            case SUCCESS -> StateMachineOperationResult.success(proto.getSuccess());
+            case BALANCE -> StateMachineOperationResult.balance(proto.getBalance());
+            case RESULT_NOT_SET -> throw new IllegalArgumentException("OperationResult.oneof 'op' not set");
+        };
+    }
+}
+
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/common/src/main/java/org/example/ExecutorManager.java
 ```java
 package org.example;
 
@@ -1449,7 +1990,383 @@ public class ExecutorManager {
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/messaging/ClientService.java
+## File: /tpc-paxos/repos/2pc-paxos/paxos/src/main/java/org/example/state/Role.java
+```java
+package org.example.state;
+
+public enum Role {
+    BACKUP,
+    CANDIDATE,
+    LEADER
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/paxos/src/main/java/org/example/state/Ballot.java
+```java
+package org.example.state;
+
+public class Ballot {
+    private long number;
+    private int serverId;
+
+    public Ballot(long number, int serverId) {
+        this.number = number;
+        this.serverId = serverId;
+    }
+
+    public Ballot(org.example.Ballot protoBallot) {
+        this.number = protoBallot.getInstance();
+        this.serverId = protoBallot.getSenderId();
+    }
+
+    public long getNumber() {
+        return number;
+    }
+
+    public int getServerId() {
+        return serverId;
+    }
+
+    public void setNumber(long number) {
+        this.number = number;
+    }
+
+    public void setServerId(int serverId) {
+        this.serverId = serverId;
+    }
+
+    public void setBallot(long number, int serverId) {
+        this.number = number;
+        this.serverId = serverId;
+    }
+
+    public void setBallot(Ballot other) {
+        this.number = other.number;
+        this.serverId = other.serverId;
+    }
+
+    public void incrementBallot(int serverId) {
+        this.number += 1;
+        this.serverId = serverId;
+    }
+
+    public boolean isGreaterThan(Ballot other) {
+        if (this.number > other.number) {
+            return true;
+        } else if (this.number == other.number) {
+            return this.serverId > other.serverId;
+        } else {
+            return false;
+        }
+    }
+
+    public boolean isGreaterThan(org.example.Ballot other) {
+        return isGreaterThan(new Ballot(other));
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) return true;
+        if (obj == null || getClass() != obj.getClass()) return false;
+        Ballot ballot = (Ballot) obj;
+        return number == ballot.number && serverId == ballot.serverId;
+    }
+
+    @Override
+    public String toString() {
+        return "Ballot<" +
+                + number +
+                ", " + serverId +
+                '>';
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/paxos/src/main/java/org/example/state/PaxosState.java
+```java
+package org.example.state;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.ClientRequest;
+
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+
+public class PaxosState {
+    private static final Logger logger = LogManager.getLogger(PaxosState.class);
+
+    // Executor provided by ExecutorManager (named "state-manager-*" thread)
+    private final ExecutorService stateExec;
+
+    private final int serverId;
+    private final Ballot ballot;
+    private int leaderId;
+    private Role role;
+    private final OperationLog operationLog;
+
+    public PaxosState(int serverId, ExecutorService stateExec) {
+        this.serverId = serverId;
+        this.stateExec = stateExec;
+        this.ballot = new Ballot(0, serverId);
+        this.leaderId = -1; // No leader initially
+        this.role = null;
+        this.operationLog = new OperationLog();
+    }
+
+    // Core scheduling helpers
+
+    // Re-entrancy: rely on the named thread "state-manager-*"
+    private boolean onStateThread() {
+        String name = Thread.currentThread().getName();
+//        logger.info("Current thread name: {}, on state thread? {}", name, name.startsWith("-state-manager"));
+        return name != null && name.startsWith("-state-manager");
+    }
+
+    private <T> CompletableFuture<T> runAsync(Callable<T> task) {
+        CompletableFuture<T> f = new CompletableFuture<>();
+        stateExec.execute(() -> {
+            try {
+                f.complete(task.call());
+            } catch (Throwable t) {
+                f.completeExceptionally(t);
+            }
+        });
+        return f;
+    }
+
+    // Overload for void-returning work
+    private CompletableFuture<Void> runAsync(Runnable task) {
+        return runAsync(() -> {
+            task.run();
+            return null;
+        });
+    }
+
+    private <T> T runSync(Callable<T> task) {
+        if (onStateThread()) {
+            try {
+//                logger.info("Running task synchronously on state thread");
+                return task.call();
+            } catch (Exception e) {
+                throw wrap(e);
+            }
+        }
+        // No timeout: block until completion
+        try {
+//            logger.info("Submitting task to state executor for synchronous execution as onStateThread was false");
+            return runAsync(task).get();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("State task interrupted", ie);
+        } catch (ExecutionException ee) {
+            throw wrap(ee.getCause());
+        }
+    }
+
+    // Overload for void-returning work
+    private void runSync(Runnable task) {
+        runSync(() -> {
+            task.run();
+            return null;
+        });
+    }
+
+    private RuntimeException wrap(Throwable t) {
+        return (t instanceof RuntimeException re) ? re : new RuntimeException(t);
+    }
+
+    public int getServerId() {
+        return serverId;
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/paxos/src/main/java/org/example/state/OperationLog.java
+```java
+package org.example.state;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.checkerframework.checker.units.qual.A;
+import org.example.ClientRequest;
+
+import java.util.EnumMap;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class OperationLog {
+    private static final Logger logger = LogManager.getLogger(OperationLog.class);
+
+    private final EnumMap<OperationStatus, Integer> STATUS_ORDER;
+    private final ConcurrentMap<Long, OperationLogEntry> entries;
+    private final AtomicLong nextSeqNum;
+
+    //map of OperationLogEntry keyed by seqNum
+
+    public OperationLog() {
+        this.STATUS_ORDER = new EnumMap<>(OperationStatus.class);
+        STATUS_ORDER.put(OperationStatus.NONE, 0);
+        STATUS_ORDER.put(OperationStatus.PREPARED, 1);
+        STATUS_ORDER.put(OperationStatus.COMMITTED, 2);
+        STATUS_ORDER.put(OperationStatus.EXECUTED, 3);
+        STATUS_ORDER.put(OperationStatus.CHECKPOINTED, 4);
+
+        this.entries = new ConcurrentHashMap<>();
+        this.nextSeqNum = new AtomicLong(1L);
+    }
+
+    private int order(OperationStatus s) {
+        return STATUS_ORDER.get(s);
+    }
+
+    // Leader path: allocate new seqNum and insert a NONE/PREPARED entry
+    public long addOperation(ClientRequest request, Ballot ballot) {
+        long seq = nextSeqNum.getAndIncrement();
+
+        OperationLogEntry entry = new OperationLogEntry(
+                request,
+                ballot,
+                OperationStatus.NONE
+        );
+
+        OperationLogEntry prev = entries.putIfAbsent(seq, entry);
+        if (prev != null) {
+            // Should not happen if seq numbers are strictly monotonic
+            logger.warn("Seq {} already present when adding operation: {}", seq, prev);
+        }
+        return seq;
+    }
+
+    // Follower / generic: ensure entry exists for a specific seqNum
+    // adds if null and return existing to be compared if present
+    public OperationLogEntry ensureEntry(long seqNum, ClientRequest request, Ballot ballot) {
+        return entries.compute(seqNum, (k, existing) -> {
+            if (existing == null) {
+                return new OperationLogEntry(request, ballot, OperationStatus.NONE);
+            }
+            // Keep existing request/ballot if already present
+            return existing;
+        });
+    }
+
+    public ClientRequest getRequest(long seqNum) {
+        OperationLogEntry entry = entries.get(seqNum);
+        return (entry != null) ? entry.request() : null;
+    }
+
+    public OperationStatus getStatus(long seqNum) {
+        OperationLogEntry entry = entries.get(seqNum);
+        return (entry != null) ? entry.status() : OperationStatus.NONE;
+    }
+
+    public boolean advanceStatus(long seqNum, OperationStatus newStatus) {
+        OperationLogEntry result = entries.computeIfPresent(seqNum, (k, oldEntry) -> {
+            OperationStatus current = oldEntry.status();
+            // Do not go backwards or stay the same
+            if (order(newStatus) <= order(current)) {
+                return oldEntry;
+            }
+            return new OperationLogEntry(
+                    oldEntry.request(),
+                    oldEntry.ballot(),
+                    newStatus
+            );
+        });
+
+        return result != null && result.status() == newStatus;
+    }
+
+    public boolean compareAndSetStatus(long seqNum,
+                                       OperationStatus expected,
+                                       OperationStatus newStatus) {
+        OperationLogEntry result = entries.computeIfPresent(seqNum, (k, oldEntry) -> {
+            if (oldEntry.status() != expected) {
+                return oldEntry; // no change
+            }
+            // Optional: enforce monotonicity here as well
+            if (order(newStatus) < order(expected)) {
+                logger.error("Attempt to move status backwards: {} -> {}", expected, newStatus);
+                return oldEntry;
+            }
+            return new OperationLogEntry(
+                    oldEntry.request(),
+                    oldEntry.ballot(),
+                    newStatus
+            );
+        });
+
+        return result != null && result.status() == newStatus;
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/paxos/src/main/java/org/example/state/OperationStatus.java
+```java
+package org.example.state;
+
+public enum OperationStatus {
+    PREPARED,
+    COMMITTED,
+    EXECUTED,
+    CHECKPOINTED,
+    NONE
+}
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/paxos/src/main/java/org/example/state/OperationLogEntry.java
+```java
+package org.example.state;
+
+import org.example.ClientRequest;
+
+public record OperationLogEntry(ClientRequest request, Ballot ballot, OperationStatus status) {
+    @Override
+    public String toString() {
+        return "OperationLogEntry{" +
+                "request=" + request +
+                ", ballot=" + ballot +
+                ", status=" + status +
+                '}';
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/paxos/src/main/java/org/example/consensus/handlers/ClientRequestHandler.java
+```java
+package org.example.consensus.handlers;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.ClientRequest;
+import org.example.state.PaxosState;
+
+public class ClientRequestHandler {
+    private static final Logger logger = LogManager.getLogger(ClientRequestHandler.class);
+
+    private final PaxosState state;
+
+    public ClientRequestHandler(PaxosState state) {
+        this.state = state;
+    }
+
+    public void handle(ClientRequest request) {
+
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/paxos/src/main/java/org/example/messaging/PaxosService.java
 ```java
 package org.example.messaging;
 
@@ -1457,10 +2374,31 @@ import com.google.protobuf.Empty;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.example.ClientServiceGrpc;
+import org.example.PaxosServer;
+import org.example.PaxosServiceGrpc;
+import org.example.PrepareMessage;
+import org.example.PromiseMessage;
 
-public class ClientService extends ClientServiceGrpc.ClientServiceImplBase {
-    private static final Logger logger = LogManager.getLogger(ClientService.class);
+public class PaxosService extends PaxosServiceGrpc.PaxosServiceImplBase {
+    private static final Logger logger = LogManager.getLogger(PaxosService.class);
+
+    private final PaxosServer server;
+
+    public PaxosService(PaxosServer server) {
+        this.server = server;
+    }
+
+    @Override
+    public void prepare(PrepareMessage request, StreamObserver<PromiseMessage> responseObserver) {
+        logger.info("Received PrepareMessage with ballot number: {}", request.getBallot());
+
+        PromiseMessage response = PromiseMessage.newBuilder()
+                .setBallot(request.getBallot())
+                .build();
+
+        responseObserver.onNext(response);
+        responseObserver.onCompleted();
+    }
 
     @Override
     public void ping(Empty request, StreamObserver<Empty> responseObserver) {
@@ -1472,7 +2410,113 @@ public class ClientService extends ClientServiceGrpc.ClientServiceImplBase {
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/messaging/CLIServiceServer.java
+## File: /tpc-paxos/repos/2pc-paxos/paxos/src/main/java/org/example/messaging/PaxosMessageSender.java
+```java
+package org.example.messaging;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.util.concurrent.ExecutorService;
+
+public class PaxosMessageSender extends MessageSender {
+
+    private static final Logger logger = LogManager.getLogger(PaxosMessageSender.class);
+
+    public PaxosMessageSender(int nodeId, ExecutorService networkExecutor) {
+        super(nodeId, networkExecutor);
+    }
+
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/paxos/src/main/java/org/example/PaxosServer.java
+```java
+package org.example;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.consensus.handlers.ClientRequestHandler;
+import org.example.messaging.PaxosMessageSender;
+import org.example.messaging.PaxosService;
+import org.example.state.PaxosState;
+
+public class PaxosServer {
+    private static final Logger logger = LogManager.getLogger(PaxosServer.class);
+
+    private final PaxosState state;
+    private final PaxosService paxosService;
+    private final PaxosMessageSender messageSender;
+
+    private final ClientRequestHandler clientRequestHandler;
+
+    public PaxosServer(int serverId, ExecutorManager executorManager) {
+        this.state = new PaxosState(serverId, executorManager.getStateExecutor());
+        this.paxosService = new PaxosService(this);
+        this.messageSender = new PaxosMessageSender(serverId, executorManager.getNetworkExecutor());
+
+        this.clientRequestHandler = new ClientRequestHandler(state);
+        logger.info("PaxosServer {} initialized.", serverId);
+    }
+
+    public int getServerId() {
+        return state.getServerId();
+    }
+
+    public PaxosService getPaxosService() {
+        return paxosService;
+    }
+
+    public void setActive(boolean active) {
+        messageSender.setActive(active);
+    }
+
+    public void handleClientRequest(ClientRequest request) {
+        clientRequestHandler.handle(request);
+    }
+}
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/messaging/ClientService.java
+```java
+package org.example.messaging;
+
+import com.google.protobuf.Empty;
+import io.grpc.stub.StreamObserver;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.ClientReply;
+import org.example.ClientRequest;
+import org.example.ClientServiceGrpc;
+import org.example.TPCServer;
+
+public class ClientService extends ClientServiceGrpc.ClientServiceImplBase {
+    private static final Logger logger = LogManager.getLogger(ClientService.class);
+
+    private final TPCServer server;
+
+    public ClientService(TPCServer server) {
+        this.server = server;
+    }
+
+    @Override
+    public void request(ClientRequest request, StreamObserver<ClientReply> responseObserver) {
+        logger.info("Received client request: {}", request);
+        server.handleClientRequest(request, responseObserver);
+    }
+
+    @Override
+    public void ping(Empty request, StreamObserver<Empty> responseObserver) {
+        logger.debug("Received ping request");
+        responseObserver.onNext(Empty.newBuilder().build());
+        responseObserver.onCompleted();
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/messaging/CLIServiceServer.java
 ```java
 package org.example.messaging;
 
@@ -1493,10 +2537,45 @@ public class CLIServiceServer extends CLIServiceGrpc.CLIServiceImplBase {
 
     @Override
     public void setActiveFlag(ActiveFlag request, StreamObserver<Acknowledgement> responseObserver) {
-//        server.setActive(request.getActiveFlag());
+        server.setActive(request.getActiveFlag());
         logger.info("Set active flag to: {}", request.getActiveFlag());
         Acknowledgement ack = Acknowledgement.newBuilder().setStatus(true).build();
         responseObserver.onNext(ack);
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void failNode(NodeId nodeId, StreamObserver<Acknowledgement> responseObserver) {
+        server.setActive(false);
+        logger.info("Fail server called from CLI");
+        Acknowledgement ack = Acknowledgement.newBuilder().setStatus(true).build();
+        responseObserver.onNext(ack);
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void recoverNode(NodeId nodeId, StreamObserver<Acknowledgement> responseObserver) {
+        server.setActive(true);
+        logger.info("Recover server called from CLI");
+        Acknowledgement ack = Acknowledgement.newBuilder().setStatus(true).build();
+        responseObserver.onNext(ack);
+        responseObserver.onCompleted();
+    }
+
+    public void reset(Empty request, StreamObserver<Acknowledgement> responseObserver) {
+        logger.info("Reset server called from CLI");
+        server.reset();
+        Acknowledgement ack = Acknowledgement.newBuilder().setStatus(true).build();
+        responseObserver.onNext(ack);
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void getDB(Empty request, StreamObserver<CLIResponse> responseObserver) {
+        logger.info("Received getDB request");
+        String dbContent = server.getDB();
+        CLIResponse response = CLIResponse.newBuilder().setCliResponse(dbContent).build();
+        responseObserver.onNext(response);
         responseObserver.onCompleted();
     }
 
@@ -1510,7 +2589,7 @@ public class CLIServiceServer extends CLIServiceGrpc.CLIServiceImplBase {
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/messaging/TPCMessageSender.java
+## File: /tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/messaging/TPCMessageSender.java
 ```java
 package org.example.messaging;
 
@@ -1531,49 +2610,296 @@ public class TPCMessageSender extends MessageSender {
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/TPCServer.java
+## File: /tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/statemachine/BankStateMachine.java
+```java
+package org.example.statemachine;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.Operation;
+import org.example.OperationResult;
+import org.example.StateMachine;
+import org.example.TPCServer;
+import org.example.persistence.KeyValueStore;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+
+public final class BankStateMachine implements StateMachine {
+
+    private static final Logger logger = LogManager.getLogger(BankStateMachine.class);
+
+    private final Map<Integer, Double> modifiedBalances;
+    private final KeyValueStore<Double> database;
+
+    public BankStateMachine(KeyValueStore<Double> database) {
+        this.modifiedBalances = new HashMap<>();
+        this.database = database;
+//        logger.info("BankStateMachine initialized with balances: {}", this.balances);
+    }
+
+    private double requireBalance(int id) {
+//        logger.info("requireBalance: Looking up account ID: '{}' (length: {}, type: {})",
+//            id, id.length(), id.getClass().getSimpleName());
+//        logger.info("requireBalance: Current balances map keys: {}", balances.keySet());
+//        logger.info("requireBalance: Current balances map size: {}", balances.size());
+
+        // Check for exact matches and similar keys
+//        for (String key : balances.keySet()) {
+//            logger.info("requireBalance: Comparing with key: '{}' (length: {}, equals: {})",
+//                key, key.length(), key.equals(id));
+//        }
+
+        Double v = database.get(id);
+//        logger.info("requireBalance: Fetched balance for '{}': {}", id, v);
+
+        if (v == null) {
+            logger.error("requireBalance: Account '{}' not present in balances, throwing exception", id);
+            throw new IllegalArgumentException("Account not present in balances: " + id);
+        }
+        return v;
+    }
+
+    @Override
+    public OperationResult execute(Operation operation, TPCServer.ExecutionMode mode) {
+        StateMachineOperation op = StateMachineOperationMapper.fromProto(operation);
+
+        return op.accept(new StateMachineOperation.Visitor<>() {
+            @Override
+            public OperationResult onTransfer(int sender, int receiver, double amount) {
+                // No-op transfer, always succeeds and does not mutate state
+                if (amount == 0.0) {
+                    return StateMachineOperationResultMapper.toProto(
+                            StateMachineOperationResult.success(true)
+                    );
+                }
+
+                if (mode == null) {
+                    throw new IllegalArgumentException("ExecutionMode must not be null");
+                }
+
+                return switch (mode) {
+                    case BOTH -> handleTransferBoth(sender, receiver, amount);
+                    case SENDER -> handleTransferSender(sender, amount);
+                    case RECEIVER -> handleTransferReceiver(receiver, amount);
+                    default -> throw new IllegalStateException("Unexpected execution mode: " + mode);
+                };
+            }
+
+            @Override
+            public OperationResult onBalanceRequest(int accountId) {
+                double balance = requireBalance(accountId);
+                return StateMachineOperationResultMapper.toProto(
+                        StateMachineOperationResult.balance(balance)
+                );
+            }
+
+            private OperationResult handleTransferBoth(int sender, int receiver, double amount) {
+                double fromBal = requireBalance(sender);
+                double toBal = requireBalance(receiver);
+
+                if (fromBal < amount) {
+                    // Insufficient funds – fail without mutating state
+                    return StateMachineOperationResultMapper.toProto(
+                            StateMachineOperationResult.success(false)
+                    );
+                }
+
+                double newFrom = fromBal - amount;
+                double newTo = toBal + amount;
+
+                database.put(sender, newFrom);
+                database.put(receiver, newTo);
+
+                modifiedBalances.put(sender, newFrom);
+                modifiedBalances.put(receiver, newTo);
+
+                return StateMachineOperationResultMapper.toProto(
+                        StateMachineOperationResult.success(true)
+                );
+            }
+
+            private OperationResult handleTransferSender(int sender, double amount) {
+                double fromBal = requireBalance(sender);
+
+                if (fromBal < amount) {
+                    return StateMachineOperationResultMapper.toProto(
+                            StateMachineOperationResult.success(false)
+                    );
+                }
+
+                double newFrom = fromBal - amount;
+
+                database.put(sender, newFrom);
+                modifiedBalances.put(sender, newFrom);
+
+                return StateMachineOperationResultMapper.toProto(
+                        StateMachineOperationResult.success(true)
+                );
+            }
+
+            private OperationResult handleTransferReceiver(int receiver, double amount) {
+                double toBal = requireBalance(receiver);
+
+                double newTo = toBal + amount;
+
+                database.put(receiver, newTo);
+                modifiedBalances.put(receiver, newTo);
+
+                return StateMachineOperationResultMapper.toProto(
+                        StateMachineOperationResult.success(true)
+                );
+            }
+        });
+    }
+
+
+    @Override
+    public String snapshot() {
+        StringBuilder sb = new StringBuilder();
+        modifiedBalances.keySet().stream()
+                .sorted()
+                .forEach(key -> sb.append(key).append("=").append(modifiedBalances.get(key)).append(";"));
+        return sb.toString();
+    }
+
+    @Override
+    public boolean applySnapshot(String snapshot) {
+        String[] entries = snapshot.split(";");
+        for (String entry : entries) {
+            if (entry.isEmpty()) continue;
+            String[] parts = entry.split("=");
+            if (parts.length != 2) {
+                logger.error("APPLY SNAPSHOT: Invalid entry format: {}", entry);
+                return false;
+            }
+            try {
+                int accountId = Integer.parseInt(parts[0]);
+                double balance = Double.parseDouble(parts[1]);
+                database.put(accountId, balance);
+                modifiedBalances.put(accountId, balance);
+            } catch (NumberFormatException e) {
+                logger.error("APPLY SNAPSHOT: Invalid number format in entry: {}", entry, e);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public Set<Integer> getModifiedAccounts() {
+        return modifiedBalances.keySet();
+    }
+
+    @Override
+    public void reset() {
+//        logger.info("RESET: Clearing balances and restoring initial state");
+        modifiedBalances.clear();
+    }
+}
+
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/TPCServer.java
 ```java
 package org.example;
 
 import io.grpc.BindableService;
+import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.messaging.CLIServiceServer;
+import org.example.messaging.ClientService;
 import org.example.messaging.TPCMessageSender;
+import org.example.persistence.KeyValueStore;
+import org.example.statemachine.BankStateMachine;
 
 import java.util.List;
+import java.util.Set;
 
 public class TPCServer {
     private static final Logger logger = LogManager.getLogger(TPCServer.class);
 
     private final int serverId;
-    private final CLIServiceServer cliServiceServer;
-    private final PaxosServer paxosServer;
 
+    private final KeyValueStore<Double> database;
+    private final BankStateMachine stateMachine;
+
+    private final CLIServiceServer cliServiceServer;
+    private final ClientService clientService;
     private final TPCMessageSender messageSender;
 
+    private final PaxosServer paxosServer;
 
-    public TPCServer(int serverId, CLIServiceServer cliServiceServer, ExecutorManager executorManager) {
+    public TPCServer(int serverId, CLIServiceServer cliServiceServer, ExecutorManager executorManager, KeyValueStore<Double> database) {
         this.serverId = serverId;
-        this.paxosServer = new PaxosServer(serverId);
+
+        this.database = database;
+        this.stateMachine = new BankStateMachine(database);
+
+        this.paxosServer = new PaxosServer(serverId, executorManager);
         this.cliServiceServer = cliServiceServer;
+        this.clientService = new ClientService(this);
 
         // this will perform warmup
         this.messageSender = new TPCMessageSender(serverId, executorManager.getNetworkExecutor());
     }
 
     public List<BindableService> getServices() {
-        return List.of(paxosServer.getPaxosService(), cliServiceServer);
+        return List.of(paxosServer.getPaxosService(), cliServiceServer, clientService);
     }
 
     public void warmup() {
         messageSender.warmup();
     }
+
+    public Set<Integer> getModifiedAccounts() {
+        return stateMachine.getModifiedAccounts();
+    }
+
+    public void setActive(boolean active) {
+        paxosServer.setActive(active);
+        messageSender.setActive(active);
+    }
+
+    public void handleClientRequest(ClientRequest request, StreamObserver<ClientReply> responseObserver) {
+
+
+        try {
+            Operation operation = request.getOperation();
+            OperationResult result = stateMachine.execute(operation, ExecutionMode.BOTH);
+
+            ClientReply reply = ClientReply.newBuilder()
+                    .setResult(result)
+                    .setSenderId(serverId)
+                    .setClientId(request.getClientId())
+                    .setTimestamp(request.getTimestamp())
+                    .build();
+
+            logger.info("Server {} executed client request {} with result {} : {}",
+                    serverId, request, result.getResultCase(), result.getResultCase() == OperationResult.ResultCase.BALANCE
+                            ? result.getBalance()
+                            : result.getSuccess()
+            );
+
+            responseObserver.onNext(reply);
+            responseObserver.onCompleted();
+
+        } catch (Exception e) {
+            logger.error("Error executing client request {}: {}", request, e.getMessage());
+        }
+    }
+
+    public enum ExecutionMode {
+        BOTH,
+        SENDER,
+        RECEIVER
+    }
 }
 
 ```
 
-## File: C:/Users/hbiyani/DEV/tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/ServerMain.java
+## File: /tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/ServerMain.java
 ```java
 package org.example;
 
@@ -1584,16 +2910,15 @@ import org.example.config.Config;
 import org.example.messaging.CLIServiceServer;
 import org.example.messaging.MessageReceiver;
 import org.example.messaging.ServerActivityInterceptor;
+import org.example.persistence.DatabaseManager;
+import org.example.persistence.KeyValueStore;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.Set;
 
 public class ServerMain {
     private final int serverId;
@@ -1601,25 +2926,36 @@ public class ServerMain {
 
     private final ExecutorManager executorManager;
 
-    private TPCServer server;
-    private final CLIServiceServer cliServiceServer;
+    private final KeyValueStore<Double> database;
 
     private final MessageReceiver messageReceiver;
+    private final CLIServiceServer cliServiceServer;
+
+    private TPCServer server;
 
     public ServerMain(int serverId) {
         this.serverId = serverId;
         // Initialize the instance logger here so Log4j has already been configured in main()
         this.logger = LogManager.getLogger(ServerMain.class);
         this.executorManager = new ExecutorManager(Config.getNodes().size() - 1);
+        logger.info("Connecting to database for Server {}", serverId);
+        this.database = DatabaseManager.create(serverId);
+        logger.info("Database connection established for Server {}", serverId);
         this.cliServiceServer = new CLIServiceServer(this);
-        this.server = new TPCServer(serverId, cliServiceServer, executorManager);
+        this.server = new TPCServer(serverId, cliServiceServer, executorManager, database);
         this.messageReceiver = new MessageReceiver(serverId, Config.getNodePort(serverId), server.getServices(), new ServerActivityInterceptor());
     }
 
     @SuppressWarnings("unused")
     public void reset() {
-        this.server = new TPCServer(serverId, cliServiceServer, executorManager);
+        // potentially set a new serverId here if supporting re-configuration
+        this.server = new TPCServer(serverId, cliServiceServer, executorManager, database);
         logger.info("Server {} state has been reset.", serverId);
+    }
+
+    public void setActive(boolean active) {
+        messageReceiver.setActive(active);
+        server.setActive(active);
     }
 
     public void start() {
@@ -1628,6 +2964,28 @@ public class ServerMain {
             executorManager.submitListeningTask(() -> messageReceiver.startListening(server::warmup));
         } catch (Exception e) {
             logger.error("Server {} encountered an error: {}", serverId, e.getMessage(), e);
+        }
+    }
+
+    public String getDB() {
+        Set<Integer> modifiedAccounts = server.getModifiedAccounts();
+        logger.info("Modified accounts for Server {}: {}", serverId, modifiedAccounts);
+        StringBuilder sb = new StringBuilder();
+        if (modifiedAccounts.isEmpty()) {
+//            sb.append("No accounts have been modified. Printing balances of first 10 accounts\n");
+            for (int accountId = 1; accountId <= 10; accountId++) {
+                int key = (Config.getDatabaseSize() / Config.getServerClusterCount()) * ((serverId - 1) / Config.getServerClusterCount()) + accountId;
+                Double balance = database.get(key);
+                sb.append(key).append(" : ").append(balance).append("; ");
+            }
+            return sb.toString();
+        } else {
+//            sb.append("Modified Accounts:\n");
+            for (Integer accountId : modifiedAccounts) {
+                Double balance = database.get(accountId);
+                sb.append(accountId).append(" : ").append(balance).append("; ");
+            }
+            return sb.toString();
         }
     }
 
@@ -1689,5 +3047,33 @@ public class ServerMain {
         serverMain.start();
     }
 }
+```
+
+## File: /tpc-paxos/repos/2pc-paxos/server/src/main/java/org/example/StateMachine.java
+```java
+package org.example;
+
+/**
+ * State machine execution contract used by ServerState.
+ */
+public interface StateMachine {
+    /**
+     * Execute a single deterministic operation and return a proto OperationResult.
+     */
+    OperationResult execute(Operation operation, TPCServer.ExecutionMode mode);
+
+    /**
+     * Consistent snapshot of application state for CLI/inspection.
+     */
+    String snapshot();
+
+    boolean applySnapshot(String snapshot);
+
+    /**
+     * Clear all application state (used between test sets and on ServerState.reset()).
+     */
+    void reset();
+}
+
 ```
 
