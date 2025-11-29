@@ -55,6 +55,13 @@ public class Ballot {
         }
     }
 
+    public org.example.Ballot toProto() {
+        return org.example.Ballot.newBuilder()
+                .setInstance(this.number)
+                .setSenderId(this.serverId)
+                .build();
+    }
+
     public boolean isGreaterThan(org.example.Ballot other) {
         return isGreaterThan(new Ballot(other));
     }

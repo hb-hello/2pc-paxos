@@ -4,10 +4,7 @@ import com.google.protobuf.Empty;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.example.PaxosServer;
-import org.example.PaxosServiceGrpc;
-import org.example.PrepareMessage;
-import org.example.PromiseMessage;
+import org.example.*;
 
 public class PaxosService extends PaxosServiceGrpc.PaxosServiceImplBase {
     private static final Logger logger = LogManager.getLogger(PaxosService.class);
@@ -20,14 +17,14 @@ public class PaxosService extends PaxosServiceGrpc.PaxosServiceImplBase {
 
     @Override
     public void prepare(PrepareMessage request, StreamObserver<PromiseMessage> responseObserver) {
+        ServerMessage<PrepareMessage> message = new ServerMessage<>(request);
         logger.info("Received PrepareMessage with ballot number: {}", request.getBallot());
+        server.handlePrepare(message, responseObserver);
+    }
 
-        PromiseMessage response = PromiseMessage.newBuilder()
-                .setBallot(request.getBallot())
-                .build();
-
-        responseObserver.onNext(response);
-        responseObserver.onCompleted();
+    public void newView(NewViewMessage request, StreamObserver<AcceptedMessage> responseObserver) {
+        logger.info("Received NewViewMessage for view number: {}", request.getBallot());
+        server.handleNewView(request);
     }
 
     @Override

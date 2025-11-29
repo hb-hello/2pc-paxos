@@ -6,10 +6,7 @@ import org.apache.logging.log4j.Logger;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Properties;
+import java.util.*;
 
 public class Config {
     private static final Logger logger = LogManager.getLogger(Config.class);
@@ -27,6 +24,8 @@ public class Config {
     private static int checkpointInterval;
     private static int databaseSize;
     private static String serverExecutablePath;
+
+    private static int quorumSize;
 
     // Map of server id -> NodeDetails (in insertion order)
     private static final Map<Integer, NodeDetails> nodes = new LinkedHashMap<>();
@@ -91,6 +90,8 @@ public class Config {
             int port = serverPortStart + (i - 1);
             nodes.put(i, new NodeDetails(i, host, port));
         }
+
+        quorumSize = (serverClusterSize / 2) + 1;
 
         initialized = true;
         logger.info("Config initialized: {} servers configured (including client at 0), transactions path: {}, database.size={}, server.executable.path={}", nodes.size(), transactionsSetsPath, databaseSize, serverExecutablePath);
@@ -195,6 +196,23 @@ public class Config {
     public static int getServerCount() {
         ensureInitialized();
         return nodes.size() - 1;
+    }
+
+    public static List<Integer> getServerIdsInClusterExcept(int excludeId) {
+        ensureInitialized();
+        List<Integer> ids = new ArrayList<>();
+        //TODO: Add maps to identify cluster for a server
+        for (Integer id : nodes.keySet()) {
+            if (id != 0 && id != excludeId) {
+                ids.add(id);
+            }
+        }
+        return ids;
+    }
+
+    public static int getQuorumSize() {
+        ensureInitialized();
+        return quorumSize;
     }
 
     /**

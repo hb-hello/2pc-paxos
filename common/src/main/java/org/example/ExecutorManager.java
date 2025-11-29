@@ -57,6 +57,10 @@ public class ExecutorManager {
         return networkExecutor;
     }
 
+    public ExecutorService getMessageExecutor() {
+        return messageExecutor;
+    }
+
     public void submitStateTransition(Runnable task) {
         stateExecutor.submit(task);
     }

@@ -20,8 +20,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class CliMain {
 
@@ -30,6 +32,8 @@ public class CliMain {
     private final CLIMessageSender cliMessageSender;
     private final MessageReceiver messageReceiver;
     private final List<TransactionSet> transactionSets;
+    private final CountDownLatch warmupComplete = new CountDownLatch(1);
+    private final AtomicBoolean warmupStarted = new AtomicBoolean(false);
 
     public CliMain() {
         // Instantiate DBHandler so CLI commands can query DB contents
@@ -126,7 +130,16 @@ public class CliMain {
     }
 
     public void warmup() {
-        executorManager.submitMessageProcessing(cliMessageSender::warmup);
+        if (!warmupStarted.compareAndSet(false, true)) {
+            return;
+        }
+        executorManager.submitMessageProcessing(() -> {
+            try {
+                cliMessageSender.warmup();
+            } finally {
+                warmupComplete.countDown();
+            }
+        });
     }
 
     /**
@@ -242,6 +255,15 @@ public class CliMain {
         }
     }
 
+    private void awaitWarmup() {
+        try {
+            warmupComplete.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while waiting for warmup", e);
+        }
+    }
+
     public static void main(String[] args) {
         // Initialize config first so we know settings if needed
         Config.initialize();
@@ -266,6 +288,9 @@ public class CliMain {
         context.reconfigure();
 
         CliMain cli = new CliMain();
+        System.out.println("Waiting for CLI warmup to complete...");
+        cli.awaitWarmup();
+        System.out.println("Warmup complete. CLI is ready.");
 
         int nextSetNumber = 1;
         Scanner sc = new Scanner(System.in);
@@ -277,7 +302,7 @@ public class CliMain {
             System.out.println(" 2 - PrintLog");
             System.out.println(" 3 - PrintStatus");
             System.out.println(" 4 - PrintView");
-            System.out.println(" 5 - Continue with next set (#" + (nextSetNumber) + ")");
+            System.out.println(" 5 - Continue with next set (#" + nextSetNumber + ")");
             System.out.println(" 6 - DEBUG: PrintOperationLog");
             System.out.println(" 7 - DEBUG: Pause/Resume client (pause a client to inspect logs/db)");
             System.out.println(" 8 - DEBUG: Choose next set number");
