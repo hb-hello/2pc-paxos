@@ -2,6 +2,7 @@ package org.example;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LoggerContext;
+import org.example.benchmark.ClientBenchmark;
 import org.example.client.ClientNode;
 import org.example.client.TransactionSet;
 import org.example.client.TransactionSetLoader;
@@ -20,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class CliMain {
 
@@ -79,9 +81,9 @@ public class CliMain {
                     System.out.println("Warning: failed to activate server " + i + " " + e.getMessage());
                 }
             }
-            System.out.println("Server reset/activation complete.");
+            System.out.println("Server activation complete.");
         } catch (Exception e) {
-            System.out.println("Warning: failed to reset/activate servers before warmup: " + e.getMessage());
+            System.out.println("Warning: failed to activate servers before warmup: " + e.getMessage());
         }
     }
 
@@ -195,6 +197,43 @@ public class CliMain {
         }
     }
 
+    // In CliMain.java
+
+    private void runBenchmark(int totalRequests) {
+        // Make sure servers are reset and active
+//        resetAllServers();
+        activateAllServers();
+
+        // Build a fresh ClientNode with current account→cluster mapping
+        Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
+        ClientNode clientNode = new ClientNode(0, cliMessageSender, accountToClusterIndex);
+
+        ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
+        clientNode.setMetricsListener(benchmark);
+
+        // Build 6000 intra-shard transfers evenly across shards
+        List<String> txs = ClientBenchmark.buildIntraShardTransfers(accountToClusterIndex, totalRequests);
+
+        System.out.printf("Starting benchmark: %d intra-shard transfers%n", totalRequests);
+
+        benchmark.start();
+        for (String tx : txs) {
+            clientNode.processTransaction(tx);
+        }
+
+        try {
+            // Wait up to e.g. 60 seconds for all replies
+            benchmark.awaitCompletion(60, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.out.println("Benchmark interrupted.");
+            return;
+        }
+
+        benchmark.printResults();
+    }
+
+
     private void shutdown() {
         try {
             dbHandler.shutdown();
@@ -243,6 +282,7 @@ public class CliMain {
             System.out.println(" 7 - DEBUG: Pause/Resume client (pause a client to inspect logs/db)");
             System.out.println(" 8 - DEBUG: Choose next set number");
             System.out.println(" 9 - DEBUG: PrintDB directly");
+            System.out.println(" 10 - Run synthetic benchmark (6000 intra-shard tx)");
             System.out.println(" 0 - Exit");
             System.out.print("Choice: ");
             String choice = sc.nextLine().trim();
@@ -261,6 +301,9 @@ public class CliMain {
                     System.out.print("Enter client ID: ");
                     String idStr = sc.nextLine().trim();
                     cli.printDBForAccountId(idStr);
+                }
+                case "10" -> {
+                    cli.runBenchmark(6000);
                 }
                 case "0" -> {
                     System.out.println("Exiting...");

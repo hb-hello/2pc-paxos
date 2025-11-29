@@ -4,6 +4,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
+import org.example.benchmark.ClientMetricsListener;
 import org.example.config.Config;
 import org.example.messaging.CLIMessageSender;
 
@@ -22,6 +23,12 @@ public class ClientNode {
     private final Map<Integer, Integer> accountIdToClusterIndex;
     private final Map<Integer, Integer> clusterIndexLeaderId;
     private final Map<Integer, int[]> clusterIndexNodeIds;
+
+    private volatile ClientMetricsListener metricsListener;
+
+    public void setMetricsListener(ClientMetricsListener listener) {
+        this.metricsListener = listener;
+    }
 
     public ClientNode(int clientId,
                       CLIMessageSender messageSender,
@@ -220,6 +227,10 @@ public class ClientNode {
                                      int nodeId,
                                      ListenableFuture<ClientReply> future,
                                      boolean fromBroadcast) {
+        ClientRequest completedRequest = null;
+        long latency = 0L;
+        boolean shouldNotify = false;
+
         // Serialize all state changes for this request
         synchronized (ctx) {
             if (ctx.completed) {
@@ -234,7 +245,9 @@ public class ClientNode {
                 }
 
                 ctx.completed = true;
-                long latency = System.currentTimeMillis() - ctx.startTimeMillis;
+                latency = System.currentTimeMillis() - ctx.startTimeMillis;
+                completedRequest = ctx.request;
+                shouldNotify = true;
                 logger.info("Request {} completed via node {} in {} ms, result={}",
                         ctx.request.getTimestamp(), nodeId, latency, reply.getResult());
                 // TODO: record throughput/latency here
@@ -254,6 +267,14 @@ public class ClientNode {
                         startNextBroadcastRoundLocked(ctx);
                     }
                 }
+            }
+        }
+
+        // Notify listener outside synchronized block
+        if (shouldNotify) {
+            ClientMetricsListener listener = this.metricsListener;
+            if (listener != null && completedRequest != null) {
+                listener.onRequestCompleted(completedRequest, latency);
             }
         }
     }
