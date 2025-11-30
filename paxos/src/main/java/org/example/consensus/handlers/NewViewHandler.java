@@ -5,6 +5,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.AcceptMessage;
 import org.example.AcceptedMessage;
+import org.example.CommitMessage;
 import org.example.NewViewMessage;
 import org.example.consensus.LivenessTimer;
 import org.example.messaging.ServerMessage;
@@ -39,6 +40,9 @@ public class NewViewHandler {
                             .build();
                     responseObserver.onNext(acceptedMessage);
                 }
+            }
+            for (CommitMessage msg : newView.getCommitLogList()) {
+                state.commitRequest(new ServerMessage<>(msg));
             }
             responseObserver.onCompleted();
             logger.info("Completed responding to new view");

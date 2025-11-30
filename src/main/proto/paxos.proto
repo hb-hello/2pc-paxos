@@ -32,7 +32,8 @@ message PrepareMessage {
 message PromiseMessage {
   Ballot ballot = 1;
   repeated AcceptMessage accept_log = 2;
-  int32 sender_id = 3;
+  repeated CommitMessage commit_log = 3;
+  int32 sender_id = 4;
 }
 
 // Accept phase
@@ -61,6 +62,7 @@ message AcceptedMessage {
 message NewViewMessage {
   Ballot ballot = 1;
   repeated AcceptMessage accept_log = 2;
+  repeated CommitMessage commit_log = 3;
 }
 
 // Commit phase

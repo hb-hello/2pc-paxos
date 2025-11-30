@@ -1,6 +1,7 @@
 package org.example;
 
 import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.LoggerContext;
 import org.example.benchmark.ClientBenchmark;
 import org.example.client.ClientNode;
@@ -9,6 +10,7 @@ import org.example.client.TransactionSetLoader;
 import org.example.config.Config;
 import org.example.messaging.CLIMessageSender;
 import org.example.messaging.CLIServiceClient;
+import org.example.messaging.ClientServiceClient;
 import org.example.messaging.MessageReceiver;
 import org.example.persistence.DBHandler;
 
@@ -16,7 +18,6 @@ import java.io.File;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
@@ -27,6 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class CliMain {
 
+    private static final Logger logger = LogManager.getLogger(CliMain.class);
+
     private final ExecutorManager executorManager;
     private final DBHandler dbHandler;
     private final CLIMessageSender cliMessageSender;
@@ -34,6 +37,9 @@ public class CliMain {
     private final List<TransactionSet> transactionSets;
     private final CountDownLatch warmupComplete = new CountDownLatch(1);
     private final AtomicBoolean warmupStarted = new AtomicBoolean(false);
+    private final ClientServiceClient clientServiceClient;
+
+    private volatile ClientNode activeClientNode;
 
     public CliMain() {
         // Instantiate DBHandler so CLI commands can query DB contents
@@ -42,7 +48,8 @@ public class CliMain {
 
         this.cliMessageSender = new CLIMessageSender(0, Executors.newSingleThreadExecutor());
         CLIServiceClient cliServiceClient = new CLIServiceClient(this);
-        this.messageReceiver = new MessageReceiver(0, Config.getClientPort(), List.of(cliServiceClient));
+        this.clientServiceClient = new ClientServiceClient(this);
+        this.messageReceiver = new MessageReceiver(0, Config.getClientPort(), List.of(cliServiceClient, clientServiceClient));
 
         // Pre-load all transaction sets from CSV
         try {
@@ -144,10 +151,10 @@ public class CliMain {
 
     /**
      * Process a single transaction set by set number:
-     *  - find the TransactionSet
-     *  - activate the correct live servers
-     *  - build a ClientNode using DBHandler's account→cluster mapping
-     *  - send all transactions in order
+     * - find the TransactionSet
+     * - activate the correct live servers
+     * - build a ClientNode using DBHandler's account→cluster mapping
+     * - send all transactions in order
      */
     private void processTransactionSet(int setNumber) {
         if (transactionSets == null || transactionSets.isEmpty()) {
@@ -177,6 +184,7 @@ public class CliMain {
 
         // Create a fresh ClientNode for this set
         ClientNode clientNode = new ClientNode(0, cliMessageSender, accountToClusterIndex);
+        registerActiveClientNode(clientNode);
 
         resetAllServers();
 
@@ -220,6 +228,7 @@ public class CliMain {
         // Build a fresh ClientNode with current account→cluster mapping
         Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
         ClientNode clientNode = new ClientNode(0, cliMessageSender, accountToClusterIndex);
+        registerActiveClientNode(clientNode);
 
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
         clientNode.setMetricsListener(benchmark);
@@ -253,6 +262,20 @@ public class CliMain {
             messageReceiver.shutdown();
         } catch (Exception ignored) {
         }
+    }
+
+    void registerActiveClientNode(ClientNode clientNode) {
+        this.activeClientNode = clientNode;
+    }
+
+    public void handleClientReply(ClientReply reply) {
+        ClientNode clientNode = this.activeClientNode;
+        if (clientNode == null) {
+            logger.warn("Dropping client reply for timestamp {} client {} because no active client node is registered.",
+                    reply.getTimestamp(), reply.getClientId());
+            return;
+        }
+        clientNode.handleClientReply(reply);
     }
 
     private void awaitWarmup() {

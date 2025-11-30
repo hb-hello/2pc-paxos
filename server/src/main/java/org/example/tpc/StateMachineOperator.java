@@ -2,9 +2,8 @@ package org.example.tpc;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.example.ClientRequest;
-import org.example.Operation;
-import org.example.OperationResult;
+import org.example.*;
+import org.example.messaging.ServerMessage;
 import org.example.persistence.KeyValueStore;
 import org.example.state.OperationLog;
 import org.example.state.OperationStatus;
@@ -19,14 +18,19 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 public class StateMachineOperator {
-
     private static final Logger logger = LogManager.getLogger(StateMachineOperator.class);
+
+    private final int serverId;
 
     private final ExecutorService stateMachineExecutor;   // single-threaded
     private final BankStateMachine stateMachine;
     private final OperationLog operationLog;
+    private final ClientRequestTracker requestTracker;
+    private final BiConsumer<ServerMessage<ClientRequest>, Phase> onExecuted;
 
     // WAL: seqNum -> before-image of mutated accounts
     private final ConcurrentMap<Long, WalEntry> wal = new ConcurrentHashMap<>();
@@ -37,12 +41,18 @@ public class StateMachineOperator {
     // Next sequence number that should be executed (in-order guarantee)
     private final AtomicLong nextToExecute = new AtomicLong(1L);
 
-    public StateMachineOperator(ExecutorService stateMachineExecutor,
+    public StateMachineOperator(int serverId,
+                                ExecutorService stateMachineExecutor,
                                 KeyValueStore<Double> database,
-                                OperationLog operationLog) {
+                                OperationLog operationLog,
+                                ClientRequestTracker requestTracker,
+                                BiConsumer<ServerMessage<ClientRequest>, Phase> onExecuted) {
+        this.serverId = serverId;
         this.stateMachineExecutor = stateMachineExecutor;
         this.stateMachine = new BankStateMachine(database); // owns the DB-backed state machine
         this.operationLog = operationLog;
+        this.requestTracker = requestTracker;
+        this.onExecuted = onExecuted;
     }
 
     // Simple holder for WAL data
@@ -75,7 +85,7 @@ public class StateMachineOperator {
     /**
      * Asynchronously execute committed client requests from the Paxos operation log,
      * in-order and at-most-once, up to and including seqNum.
-     *
+     * <p>
      * This method is safe to call repeatedly / concurrently; all work is serialized
      * on the stateExecutor.
      */
@@ -120,11 +130,11 @@ public class StateMachineOperator {
             }
 
             // Status == COMMITTED: fetch request from operation log
-            ClientRequest request = operationLog.getRequest(current).payload(); //
-            if (request == null) {
-                // Log gap or not replicated yet; wait.
+            ServerMessage<ClientRequest> requestMessage = operationLog.getRequest(current);
+            if (requestMessage == null) {
                 return;
             }
+            ClientRequest request = requestMessage.payload();
 
             // Build WAL before applying the operation
             WalEntry entry = buildWalEntry(request);
@@ -138,6 +148,19 @@ public class StateMachineOperator {
 
             logger.info("Executed seq {} for client {} resultCase={}",
                     current, request.getClientId(), result.getResultCase());
+
+            // Build and store client reply in the tracker
+            ClientReply reply = ClientReply.newBuilder()
+                    .setResult(result)
+                    .setSenderId(serverId)
+                    .setClientId(request.getClientId())
+                    .setTimestamp(request.getTimestamp())
+                    .build();
+            ServerMessage<ClientReply> replyMessage = new ServerMessage<>(reply);
+            requestTracker.storeReply(requestMessage, replyMessage);
+
+            // Notify listener that the operation has been executed
+            onExecuted.accept(requestMessage, operationLog.getEntry(current).phase());
 
             // Mark as EXECUTED in the Paxos log atomically to ensure at-most-once
             operationLog.compareAndSetStatus(
@@ -199,6 +222,12 @@ public class StateMachineOperator {
                         stateMachine.restoreBalance(accountId, balance);
                     }
                 }
+                ServerMessage<ClientRequest> requestMessage = operationLog.getRequest(seqNum);
+
+                if (requestMessage != null) {
+                    requestTracker.removeReply(requestMessage);
+                }
+
                 committed.remove(seqNum);
                 f.complete(null);
             } catch (Throwable t) {

@@ -1,11 +1,11 @@
 package org.example.tpc.handlers;
 
-import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
 import org.example.consensus.LivenessTimer;
 import org.example.messaging.ServerMessage;
+import org.example.messaging.TPCMessageSender;
 import org.example.persistence.KeyValueStore;
 import org.example.tpc.*;
 
@@ -19,6 +19,7 @@ public class ClientRequestHandler {
     private final ClientRequestTracker clientRequestTracker;
     private final PaxosServer paxosServer;
     private final LivenessTimer tpcTimer;
+    private final TPCMessageSender messageSender;
 
     public ClientRequestHandler(int serverId,
                                 LockManager lockManager,
@@ -26,7 +27,8 @@ public class ClientRequestHandler {
                                 StateMachineOperator operator,
                                 ClientRequestTracker clientRequestTracker,
                                 PaxosServer paxosServer,
-                                LivenessTimer tpcTimer) {
+                                LivenessTimer tpcTimer,
+                                TPCMessageSender messageSender) {
         this.serverId = serverId;
         this.lockManager = lockManager;
         this.database = database;
@@ -34,16 +36,16 @@ public class ClientRequestHandler {
         this.clientRequestTracker = clientRequestTracker;
         this.paxosServer = paxosServer;
         this.tpcTimer = tpcTimer;
+        this.messageSender = messageSender;
     }
 
-    public void handle(ServerMessage<ClientRequest> request, StreamObserver<ClientReply> responseObserver) {
+    public void handle(ServerMessage<ClientRequest> request) {
         if (clientRequestTracker.hasRequest(request)) {
             logger.info("Received duplicate client request {}. Checking for stored reply.", request.getMessageId());
             ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(request);
             if (replyMessage != null) {
                 logger.info("Found stored reply for duplicate client request {}. Resending reply.", request.getMessageId());
-                responseObserver.onNext(replyMessage.payload());
-                responseObserver.onCompleted();
+                messageSender.sendClientReply(replyMessage);
                 return;
             }
             logger.info("No stored reply found for duplicate client request {}. Ignoring request.", request.getMessageId());
@@ -54,10 +56,11 @@ public class ClientRequestHandler {
 
         if (!clientRequest.getIsReadOnly()) {
             ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, clientRequest.getOperation(), database);
+            int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, clientRequest.getOperation(), database);
             if (lockManager.acquireLockAndCheckBalance(clientRequest.getOperation(), executionMode, request.getMessageId(), database)) {
 
                 // do this regardless of role
-                clientRequestTracker.addRequest(request);
+                clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
                 paxosServer.handleClientRequest(request);
 
                 if (paxosServer.isLeader()) {
@@ -77,10 +80,10 @@ public class ClientRequestHandler {
             }
         }
 
-        if (clientRequest.getIsReadOnly()) testExecuteAndReply(request, responseObserver);
+        if (clientRequest.getIsReadOnly()) executeReadOnlyAndReply(request);
     }
 
-    private void testExecuteAndReply(ServerMessage<ClientRequest> request, StreamObserver<ClientReply> responseObserver) {
+    private void executeReadOnlyAndReply(ServerMessage<ClientRequest> request) {
         try {
             ClientRequest clientRequest = request.payload();
             Operation resultOperation = clientRequest.getOperation();
@@ -101,8 +104,7 @@ public class ClientRequestHandler {
                             : result.getSuccess()
             );
 
-            responseObserver.onNext(reply);
-            responseObserver.onCompleted();
+            messageSender.sendClientReply(new ServerMessage<>(reply));
 
         } catch (Exception e) {
             logger.error("Error executing client request {}: {}", request, e.getMessage());

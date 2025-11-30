@@ -1,6 +1,5 @@
 package org.example.client;
 
-import com.google.common.util.concurrent.ListenableFuture;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
@@ -10,6 +9,7 @@ import org.example.messaging.CLIMessageSender;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ClientNode {
 
@@ -23,6 +23,7 @@ public class ClientNode {
     private final Map<Integer, Integer> accountIdToClusterIndex;
     private final Map<Integer, Integer> clusterIndexLeaderId;
     private final Map<Integer, int[]> clusterIndexNodeIds;
+    private final Map<PendingRequestKey, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
 
     private volatile ClientMetricsListener metricsListener;
 
@@ -173,6 +174,7 @@ public class ClientNode {
         }
 
         PendingRequest ctx = new PendingRequest(request, targetClusterIndex);
+        pendingRequests.put(PendingRequestKey.of(ctx.request), ctx);
         sendToLeader(ctx);
     }
 
@@ -181,76 +183,45 @@ public class ClientNode {
             return;
         }
         int leaderNodeId = clusterIndexLeaderId.get(ctx.clusterIndex);
-        long deadlineMillis = Config.getClientTimeoutMillis(); // per-RPC deadline[attached_file:1]
+        long deadlineMillis = Config.getClientTimeoutMillis();
 
         logger.debug("Sending request {} to leader {} of cluster {}",
                 ctx.request.getTimestamp(), leaderNodeId, ctx.clusterIndex);
 
-        ListenableFuture<ClientReply> future =
-                messageSender.sendClientRequestWithDeadline(leaderNodeId, ctx.request, deadlineMillis);
-
-        future.addListener(() -> handleReplyFromNode(ctx, leaderNodeId, future, /*fromBroadcast*/ false),
-                Runnable::run); // direct executor; callback runs on gRPC completion thread
+        messageSender.sendClientRequestWithDeadline(leaderNodeId, ctx.request, deadlineMillis);
     }
 
-    /**
-     * Shared callback for leader and broadcast sends.
-     * Runs when a particular RPC future completes (success or failure).
-     */
     private void handleReplyFromNode(PendingRequest ctx,
                                      int nodeId,
-                                     ListenableFuture<ClientReply> future,
+                                     ClientReply reply,
                                      boolean fromBroadcast) {
-        ClientRequest completedRequest = null;
         long latency = 0L;
-        boolean shouldNotify = false;
-
-        // Serialize all state changes for this request
+        ClientRequest completedRequest = null;
         synchronized (ctx) {
             if (ctx.completed) {
-                return; // some other callback already won
+                return;
             }
-
-            try {
-                ClientReply reply = future.get(); // future is already done
-
-                if (ctx.completed) {
-                    return; // double-check after get()
-                }
-
-                ctx.completed = true;
-                latency = System.currentTimeMillis() - ctx.startTimeMillis;
-                completedRequest = ctx.request;
-                shouldNotify = true;
-                logger.info("Request {} completed via node {} in {} ms, result={}",
-                        ctx.request.getTimestamp(), nodeId, latency, reply.getResult());
-                // TODO: record throughput/latency here
-
-            } catch (Exception e) {
-                logger.debug("Request {} RPC to node {} failed: {}",
-                        ctx.request.getTimestamp(), nodeId, e.toString());
-
-                if (!fromBroadcast) {
-                    // Leader attempt failed -> start first broadcast round
-                    startNextBroadcastRoundLocked(ctx);
-                } else {
-                    // One of the broadcast nodes failed
-                    ctx.pendingBroadcastResponses--;
-                    if (ctx.pendingBroadcastResponses == 0 && !ctx.completed) {
-                        // Whole round finished with no success
-                        startNextBroadcastRoundLocked(ctx);
-                    }
-                }
-            }
+            ctx.completed = true;
+            latency = System.currentTimeMillis() - ctx.startTimeMillis;
+            completedRequest = ctx.request;
+            logger.info("Request {} completed via node {} in {} ms, result={}",
+                    ctx.request.getTimestamp(), nodeId, latency, reply.getResult());
         }
 
-        // Notify listener outside synchronized block
-        if (shouldNotify) {
-            ClientMetricsListener listener = this.metricsListener;
-            if (listener != null && completedRequest != null) {
-                listener.onRequestCompleted(completedRequest, latency);
-            }
+        ClientMetricsListener listener = metricsListener;
+        if (listener != null) {
+            listener.onRequestCompleted(completedRequest, latency);
         }
+        pendingRequests.remove(PendingRequestKey.of(ctx.request));
+    }
+
+    public void handleClientReply(ClientReply reply) {
+        PendingRequest ctx = pendingRequests.get(PendingRequestKey.of(reply));
+        if (ctx == null) {
+            logger.warn("No pending request found for reply timestamp {} client {}", reply.getTimestamp(), reply.getClientId());
+            return;
+        }
+        handleReplyFromNode(ctx, reply.getSenderId(), reply, false);
     }
 
     private void startNextBroadcastRoundLocked(PendingRequest ctx) {
@@ -285,12 +256,7 @@ public class ClientNode {
 
         // Send RPCs
         for (int nodeId : nodeIds) {
-            ListenableFuture<ClientReply> future =
-                    messageSender.sendClientRequestWithDeadline(nodeId, request, deadlineMillis);
-
-            future.addListener(
-                    () -> handleReplyFromNode(ctx, nodeId, future, /*fromBroadcast*/ true),
-                    Runnable::run);
+            messageSender.sendClientRequestWithDeadline(nodeId, request, deadlineMillis);
         }
     }
 
@@ -338,4 +304,13 @@ public class ClientNode {
         }
     }
 
+    private record PendingRequestKey(long timestamp, int clientId) {
+        static PendingRequestKey of(ClientRequest request) {
+            return new PendingRequestKey(request.getTimestamp(), request.getClientId());
+        }
+
+        static PendingRequestKey of(ClientReply reply) {
+            return new PendingRequestKey(reply.getTimestamp(), reply.getClientId());
+        }
+    }
 }

@@ -9,7 +9,8 @@ option java_multiple_files = true;
 
 // Service definition
 service ClientService {
-  rpc Request(ClientRequest) returns (ClientReply);
+  rpc Request(ClientRequest) returns (google.protobuf.Empty) {};
+  rpc Reply(ClientReply) returns (google.protobuf.Empty) {};
 
   rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {};
 }

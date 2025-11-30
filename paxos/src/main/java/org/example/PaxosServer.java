@@ -5,6 +5,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.config.Config;
 import org.example.consensus.LivenessTimer;
+import org.example.consensus.TPCHooks;
 import org.example.consensus.handlers.*;
 import org.example.messaging.PaxosMessageSender;
 import org.example.messaging.PaxosService;
@@ -12,7 +13,6 @@ import org.example.messaging.ServerMessage;
 import org.example.state.OperationLog;
 import org.example.state.OperationLogEntry;
 import org.example.state.PaxosState;
-import org.example.state.Role;
 
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -26,6 +26,7 @@ public class PaxosServer {
     private final LivenessTimer clientRequestTimer;
 
     private final PaxosState state;
+    private TPCHooks tpcHooks;
     private AtomicBoolean leaderElectionInProgress;
 
     private final PaxosService paxosService;
@@ -38,7 +39,7 @@ public class PaxosServer {
     private final AcceptHandler acceptHandler;
     private final AcceptedHandler acceptedHandler;
 
-    public PaxosServer(int serverId, ExecutorManager executorManager) {
+    public PaxosServer(int serverId, ExecutorManager executorManager, TPCHooks tpcHooks) {
         this.executorManager = executorManager;
         this.promiseTimer = new LivenessTimer(getRandom(Config.getServerTimeoutMillis() / 3), this::promiseTimerCallback);
         this.clientRequestTimer = new LivenessTimer(Config.getServerTimeoutMillis(), this::clientRequestTimerCallback);
@@ -55,6 +56,8 @@ public class PaxosServer {
         this.newViewHandler = new NewViewHandler(state, promiseTimer);
         this.acceptHandler = new AcceptHandler(state, clientRequestTimer);
         this.acceptedHandler = new AcceptedHandler(state, this::triggerCommit);
+
+        this.tpcHooks = tpcHooks;
 
         logger.info("PaxosServer {} initialized.", serverId);
     }
@@ -92,6 +95,19 @@ public class PaxosServer {
 
     public OperationLog getOperationLog() {
         return state.getOperationLog();
+    }
+
+    public ServerMessage<ClientRequest> getClientRequestBySeqNum(long sequenceNumber) {
+        return state.getOperationLog().getRequest(sequenceNumber);
+    }
+
+    public Phase getPhaseBySeqNum(long sequenceNumber) {
+        OperationLogEntry entry = state.getLogEntry(sequenceNumber);
+        if (entry != null) {
+            return entry.phase();
+        } else {
+            return null;
+        }
     }
 
     public void handleClientRequest(ServerMessage<ClientRequest> request) {

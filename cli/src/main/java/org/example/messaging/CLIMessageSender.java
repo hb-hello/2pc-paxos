@@ -22,7 +22,7 @@ public class CLIMessageSender extends MessageSender {
         this.networkExecutor = networkExecutor;
     }
 
-    public ListenableFuture<ClientReply> sendClientRequestWithDeadline(int targetServerId, ClientRequest request, long deadlineMillis) {
+    public ListenableFuture<Empty> sendClientRequestWithDeadline(int targetServerId, ClientRequest request, long deadlineMillis) {
         ensureActive();
         ClientServiceGrpc.ClientServiceFutureStub stub = stubManager.getClientStub(targetServerId).withDeadlineAfter(deadlineMillis, TimeUnit.MILLISECONDS);
         return stub.request(request);

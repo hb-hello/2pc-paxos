@@ -45,6 +45,29 @@ public final class OperationHelper {
         }
     }
 
+    public static int resolveOtherClusterIndex(int serverId,
+                                                    Operation operation,
+                                                    KeyValueStore<Double> database) {
+        if (!operation.hasTransfer()) {
+            return -1;
+        }
+        int localCluster = Config.getServerClusterIndex(serverId);
+        Transfer transfer = operation.getTransfer();
+        Integer senderCluster = database.getClusterId(transfer.getSender());
+        Integer receiverCluster = database.getClusterId(transfer.getReceiver());
+
+        boolean senderLocal = senderCluster != null && senderCluster == localCluster;
+        boolean receiverLocal = receiverCluster != null && receiverCluster == localCluster;
+
+        if (senderLocal && receiverCluster != null && receiverCluster != localCluster) {
+            return receiverCluster;
+        }
+        if (receiverLocal && senderCluster != null && senderCluster != localCluster) {
+            return senderCluster;
+        }
+        return -1;
+    }
+
     public static int[] resolveAccountIds(Operation operation, ExecutionMode mode) {
         return switch (operation.getOpCase()) {
             case TRANSFER -> {
@@ -62,4 +85,3 @@ public final class OperationHelper {
         };
     }
 }
-

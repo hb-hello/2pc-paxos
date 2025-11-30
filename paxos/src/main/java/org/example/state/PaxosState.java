@@ -196,6 +196,10 @@ public class PaxosState {
         return operationLog;
     }
 
+    public PromiseMessage getPromiseMessage() {
+        return operationLog.getPromiseMessageWithLogs();
+    }
+
     public long acceptRequest(ServerMessage<ClientRequest> request, Phase phase) {
         return operationLog.addOperationWithStatus(request, ballot, OperationStatus.ACCEPTED, phase);
     }

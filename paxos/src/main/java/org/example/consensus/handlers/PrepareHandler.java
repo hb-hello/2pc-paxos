@@ -8,6 +8,7 @@ import org.example.PromiseMessage;
 import org.example.consensus.LivenessTimer;
 import org.example.messaging.ServerMessage;
 import org.example.state.Ballot;
+import org.example.state.OperationLog;
 import org.example.state.PaxosState;
 
 public class PrepareHandler {
@@ -19,16 +20,16 @@ public class PrepareHandler {
     public PrepareHandler(PaxosState state, LivenessTimer promiseTimer) {
         this.state = state;
         this.promiseTimer = promiseTimer;
+
     }
 
     public void handle(ServerMessage<PrepareMessage> prepare, StreamObserver<PromiseMessage> responseObserver) {
         logger.info("Received Prepare message: {}", prepare);
         Ballot newBallot = new Ballot(prepare.payload().getBallot());
         if (state.updateBallot(newBallot)) {
-            PromiseMessage promise = PromiseMessage.newBuilder()
+            PromiseMessage promise = state.getPromiseMessage().toBuilder()
                     .setBallot(newBallot.toProto())
                     .setSenderId(state.getServerId())
-                    // TODO: Include accept log
                     .build();
             responseObserver.onNext(promise);
             responseObserver.onCompleted();

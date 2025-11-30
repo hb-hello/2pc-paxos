@@ -1,9 +1,9 @@
 package org.example.state;
 
+import com.google.protobuf.MapEntry;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.example.ClientRequest;
-import org.example.Phase;
+import org.example.*;
 import org.example.messaging.ServerMessage;
 
 import java.util.EnumMap;
@@ -18,6 +18,7 @@ public class OperationLog {
     private final EnumMap<OperationStatus, Integer> STATUS_ORDER;
     private final ConcurrentMap<Long, OperationLogEntry> entries;
     private final AtomicLong nextSeqNum;
+    private final AtomicLong lastCheckpointSeqNum;
 
     //map of OperationLogEntry keyed by seqNum
 
@@ -31,6 +32,7 @@ public class OperationLog {
 
         this.entries = new ConcurrentHashMap<>();
         this.nextSeqNum = new AtomicLong(1L);
+        this.lastCheckpointSeqNum = new AtomicLong(0L);
     }
 
     private int order(OperationStatus s) {
@@ -115,30 +117,6 @@ public class OperationLog {
         return result != null && result.status() == newStatus;
     }
 
-    public boolean advancePhase(long seqNum, Phase newPhase) {
-        OperationLogEntry result = entries.computeIfPresent(seqNum, (k, oldEntry) -> {
-            Phase current = oldEntry.phase();
-            if (current == Phase.INTRA_SHARD) {
-                logger.warn("Illegal INTRA_SHARD phase transition {} -> {} for seq {}", current, newPhase, seqNum);
-                return oldEntry;
-            }
-            boolean validTransition = current == Phase.PREPARE &&
-                    (newPhase == Phase.COMMIT || newPhase == Phase.ABORT);
-            if (!validTransition) {
-                logger.warn("Illegal phase transition {} -> {} for seq {}", current, newPhase, seqNum);
-                return oldEntry;
-            }
-            return new OperationLogEntry(
-                    oldEntry.request(),
-                    oldEntry.ballot(),
-                    oldEntry.status(),
-                    newPhase
-            );
-        });
-
-        return result != null && result.phase() == newPhase;
-    }
-
     public boolean setOperationWithStatus(long seqNum,
                                           ServerMessage<ClientRequest> request,
                                           Ballot ballot,
@@ -160,5 +138,89 @@ public class OperationLog {
             return new OperationLogEntry(request, ballot, status, phase);
         });
         return updated.get();
+    }
+
+    public void markCheckpointed(long seqNum) {
+        if (seqNum <= 0) {
+            return;
+        }
+        for (long i = Math.max(1L, lastCheckpointSeqNum.get()); i <= seqNum; i++) {
+            entries.computeIfPresent(i, (k, oldEntry) -> {
+                if (oldEntry.status() == OperationStatus.CHECKPOINTED) {
+                    return oldEntry;
+                }
+                return new OperationLogEntry(
+                        oldEntry.request(),
+                        oldEntry.ballot(),
+                        OperationStatus.CHECKPOINTED,
+                        oldEntry.phase()
+                );
+            });
+        }
+        lastCheckpointSeqNum.updateAndGet(prev -> Math.max(prev, seqNum));
+    }
+
+    public PromiseMessage getPromiseMessageWithLogs() {
+
+        PromiseMessage.Builder promiseBuilder = PromiseMessage.newBuilder();
+
+        for (long i = Math.max(1L, lastCheckpointSeqNum.get()); i < nextSeqNum.get(); i++) {
+            OperationLogEntry entry = entries.get(i);
+            OperationStatus status = entry.status();
+            org.example.Ballot ballot = entry.ballot().toProto();
+            Phase phase = entry.phase();
+            ClientRequest request = entry.request().payload();
+            if (status == OperationStatus.ACCEPTED) {
+                AcceptMessage message = AcceptMessage.newBuilder()
+                        .setBallot(ballot)
+                        .setPhase(phase)
+                        .setRequest(request)
+                        .setSequenceNumber(i)
+                        .build();
+                promiseBuilder.addAcceptLog(message);
+            } else if (status == OperationStatus.COMMITTED || status == OperationStatus.EXECUTED) {
+                CommitMessage message = CommitMessage.newBuilder()
+                        .setBallot(ballot)
+                        .setPhase(phase)
+                        .setRequest(request)
+                        .setSequenceNumber(i)
+                        .build();
+                promiseBuilder.addCommitLog(message);
+            }
+        }
+
+        return promiseBuilder.build();
+    }
+
+    public NewViewMessage getNewViewMessageWithLogs() {
+
+        NewViewMessage.Builder newViewBuilder = NewViewMessage.newBuilder();
+
+        for (long i = Math.max(1L, lastCheckpointSeqNum.get()); i < nextSeqNum.get(); i++) {
+            OperationLogEntry entry = entries.get(i);
+            OperationStatus status = entry.status();
+            org.example.Ballot ballot = entry.ballot().toProto();
+            Phase phase = entry.phase();
+            ClientRequest request = entry.request().payload();
+            if (status == OperationStatus.ACCEPTED) {
+                AcceptMessage message = AcceptMessage.newBuilder()
+                        .setBallot(ballot)
+                        .setPhase(phase)
+                        .setRequest(request)
+                        .setSequenceNumber(i)
+                        .build();
+                newViewBuilder.addAcceptLog(message);
+            } else if (status == OperationStatus.COMMITTED || status == OperationStatus.EXECUTED) {
+                CommitMessage message = CommitMessage.newBuilder()
+                        .setBallot(ballot)
+                        .setPhase(phase)
+                        .setRequest(request)
+                        .setSequenceNumber(i)
+                        .build();
+                newViewBuilder.addCommitLog(message);
+            }
+        }
+
+        return newViewBuilder.build();
     }
 }

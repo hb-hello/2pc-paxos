@@ -203,6 +203,17 @@ public class Config {
         return nodes.size() - 1;
     }
 
+    public static List<Integer> getServerIdsInCluster(int clusterIndex) {
+        ensureInitialized();
+        List<Integer> ids = new ArrayList<>();
+        for (Integer id : clusterIndexToServerIdMap.get(clusterIndex)) {
+            if (id != 0) {
+                ids.add(id);
+            }
+        }
+        return ids;
+    }
+
     public static List<Integer> getServerIdsInClusterExcept(int excludeId) {
         ensureInitialized();
         List<Integer> ids = new ArrayList<>();
