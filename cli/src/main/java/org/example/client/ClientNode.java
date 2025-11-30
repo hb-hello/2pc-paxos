@@ -141,10 +141,12 @@ public class ClientNode {
      * Build the final ClientRequest from an Operation (transfer or balance) and start async send.
      */
     private void buildAndSendClientRequest(Operation operation, int accountId) {
+        boolean readOnly = operation.getOpCase() == Operation.OpCase.BALANCE_REQUEST;
         ClientRequest request = ClientRequest.newBuilder()
                 .setTimestamp(System.currentTimeMillis()) // client-side timestamp[attached_file:1]
                 .setClientId(accountId)
                 .setOperation(operation)
+                .setIsReadOnly(readOnly)
                 .build();
 
         sendClientRequestWithRetry(request);
@@ -188,35 +190,7 @@ public class ClientNode {
                 messageSender.sendClientRequestWithDeadline(leaderNodeId, ctx.request, deadlineMillis);
 
         future.addListener(() -> handleReplyFromNode(ctx, leaderNodeId, future, /*fromBroadcast*/ false),
-                runnable -> runnable.run()); // direct executor; callback runs on gRPC completion thread
-    }
-
-    private void broadcastToCluster(PendingRequest ctx) {
-        if (ctx.completed) {
-            return;
-        }
-        if (ctx.broadcastRound >= MAX_BROADCAST_ROUNDS) {
-            logger.warn("Request {} failed after {} broadcast rounds.",
-                    ctx.request.getTimestamp(), ctx.broadcastRound);
-            ctx.completed = true;
-            return;
-        }
-        ctx.broadcastRound++;
-        int[] nodeIds = clusterIndexNodeIds.get(ctx.clusterIndex);
-        ctx.pendingBroadcastResponses = nodeIds.length;
-
-        long deadlineMillis = Config.getClientTimeoutMillis();
-
-        logger.debug("Broadcast round {} for request {} to cluster {}",
-                ctx.broadcastRound, ctx.request.getTimestamp(), ctx.clusterIndex);
-
-        for (int nodeId : nodeIds) {
-            ListenableFuture<ClientReply> future =
-                    messageSender.sendClientRequestWithDeadline(nodeId, ctx.request, deadlineMillis);
-
-            future.addListener(() -> handleReplyFromNode(ctx, nodeId, future, /*fromBroadcast*/ true),
-                    runnable -> runnable.run());
-        }
+                Runnable::run); // direct executor; callback runs on gRPC completion thread
     }
 
     /**
@@ -302,7 +276,7 @@ public class ClientNode {
         // Important: we can send RPCs outside the synchronized block to avoid
         // holding the lock while scheduling network calls.
         // Copy state we need first:
-        ClientRequest request = ctx.request;
+        ClientRequest request = ctx.request.toBuilder().setIsReadOnly(false).build();
 
         // Release lock before actually sending
         // (we know ctx.broadcastRound and pendingBroadcastResponses are set)
@@ -316,7 +290,7 @@ public class ClientNode {
 
             future.addListener(
                     () -> handleReplyFromNode(ctx, nodeId, future, /*fromBroadcast*/ true),
-                    runnable -> runnable.run());
+                    Runnable::run);
         }
     }
 

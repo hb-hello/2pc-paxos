@@ -5,6 +5,7 @@ import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
+import org.example.state.Ballot;
 
 public class PaxosService extends PaxosServiceGrpc.PaxosServiceImplBase {
     private static final Logger logger = LogManager.getLogger(PaxosService.class);
@@ -18,13 +19,24 @@ public class PaxosService extends PaxosServiceGrpc.PaxosServiceImplBase {
     @Override
     public void prepare(PrepareMessage request, StreamObserver<PromiseMessage> responseObserver) {
         ServerMessage<PrepareMessage> message = new ServerMessage<>(request);
-        logger.info("Received PrepareMessage with ballot number: {}", request.getBallot());
+        logger.info("Received PrepareMessage with ballot number: {}", new Ballot(request.getBallot()));
         server.handlePrepare(message, responseObserver);
     }
 
     public void newView(NewViewMessage request, StreamObserver<AcceptedMessage> responseObserver) {
-        logger.info("Received NewViewMessage for view number: {}", request.getBallot());
-        server.handleNewView(request);
+        logger.info("Received NewViewMessage for ballot number: {}", new Ballot(request.getBallot()));
+        server.handleNewView(request, responseObserver);
+    }
+
+    public void accept(AcceptMessage request, StreamObserver<AcceptedMessage> responseObserver) {
+        ServerMessage<AcceptMessage> message = new ServerMessage<>(request);
+        logger.info("Received Accept message: {}", message);
+        server.handleAccept(message, responseObserver);
+    }
+
+    public void commit(CommitMessage request, StreamObserver<Empty> responseObserver) {
+        ServerMessage<CommitMessage> message = new ServerMessage<>(request);
+        logger.info("Received Commit message: {}", message);
     }
 
     @Override

@@ -15,6 +15,7 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
     private final int nodeId;
     private final Class<T> valueClass;
     private ChronicleMap<Integer, T> map;
+    private ChronicleMap<Integer, Integer> clusterIdMap;
 
     public ChronicleKeyValueStore(int nodeId, Class<T> valueClass) {
         this.nodeId = nodeId;
@@ -27,21 +28,34 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
     }
 
     private void build() throws IOException {
-        File file = new File("data/chronicle-node-" + nodeId + ".dat");
+        File file = new File("data/balances-node-" + nodeId + ".dat");
+        File clusterFile = new File("data/cluster-map-node-" + nodeId + ".dat");
 
         ChronicleMapBuilder<Integer, T> builder = ChronicleMapBuilder
                 .of(Integer.class, valueClass)
-                .name("kv-store-node-" + nodeId)
+                .name("balances-store-node-" + nodeId)
                 .entries(10_000)
                 .constantKeySizeBySample(0)
                 .constantValueSizeBySample(createSampleValue());
+
+        ChronicleMapBuilder<Integer, Integer> clusterBuilder = ChronicleMapBuilder
+                .of(Integer.class, Integer.class)
+                .name("cluster-map-node-" + nodeId)
+                .entries(10_000)
+                .constantKeySizeBySample(0)
+                .constantValueSizeBySample(0);
 
         if (!file.exists()) {
             file.getParentFile().mkdirs();
             file.createNewFile();
         }
+        if (!clusterFile.exists()) {
+            clusterFile.getParentFile().mkdirs();
+            clusterFile.createNewFile();
+        }
 
         this.map = builder.createPersistedTo(file);
+        this.clusterIdMap = clusterBuilder.createPersistedTo(clusterFile);
     }
 
     @Override
@@ -90,6 +104,13 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
         } catch (Exception e) {
             logger.warn("Error closing Chronicle map for node {}: {}", nodeId, e.getMessage());
         }
+        try {
+            if (clusterIdMap != null) {
+                clusterIdMap.close();
+            }
+        } catch (Exception e) {
+            logger.warn("Error closing Chronicle cluster map for node {}: {}", nodeId, e.getMessage());
+        }
     }
 
     public T createSampleValue() {
@@ -130,6 +151,34 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
             return valueClass.getDeclaredConstructor().newInstance();
         } catch (Exception e) {
             throw new RuntimeException("Failed to create sample value for ChronicleMap sizing", e);
+        }
+    }
+
+    @Override
+    public void putClusterId(int key, int clusterId) {
+        try {
+            clusterIdMap.put(key, clusterId);
+        } catch (Exception e) {
+            logger.error("Error putting cluster id entry into Chronicle map: {}", e.getMessage());
+        }
+    }
+
+    @Override
+    public Integer getClusterId(int key) {
+        try {
+            return clusterIdMap.get(key);
+        } catch (Exception e) {
+            logger.error("Error getting cluster id with key {} from Chronicle map: {}", key, e.getMessage());
+            return null;
+        }
+    }
+
+    @Override
+    public void deleteClusterId(int key) {
+        try {
+            clusterIdMap.remove(key);
+        } catch (Exception e) {
+            logger.error("Error deleting cluster id entry with key {} from Chronicle map: {}", key, e.getMessage());
         }
     }
 }

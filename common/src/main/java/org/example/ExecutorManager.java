@@ -10,7 +10,7 @@ public class ExecutorManager {
     private static final Logger logger = LogManager.getLogger(ExecutorManager.class);
 
     private final ExecutorService stateExecutor;
-    private final ExecutorService logExecutor;
+    private final ExecutorService stateMachineExecutor;
     private final ExecutorService networkExecutor;
     private final ExecutorService streamingExecutor;
     private final ExecutorService messageExecutor;
@@ -24,7 +24,7 @@ public class ExecutorManager {
         this.stateExecutor = Executors.newSingleThreadExecutor(createNamedThreadFactory("state-manager"));
 
         // Log management: Single-threaded to maintain sequential consistency of log entries
-        this.logExecutor = Executors.newSingleThreadExecutor(createNamedThreadFactory("log-manager"));
+        this.stateMachineExecutor = Executors.newSingleThreadExecutor(createNamedThreadFactory("state-machine"));
 
         // Network I/O: Fixed thread pool sized for concurrent network operations
         // Size based on: otherServerCount * 2 (for send/receive) + buffer
@@ -57,8 +57,8 @@ public class ExecutorManager {
         return networkExecutor;
     }
 
-    public ExecutorService getMessageExecutor() {
-        return messageExecutor;
+    public ExecutorService getStateMachineExecutor() {
+        return stateMachineExecutor;
     }
 
     public void submitStateTransition(Runnable task) {
@@ -66,7 +66,7 @@ public class ExecutorManager {
     }
 
     public void submitLogOperation(Runnable task) {
-        logExecutor.submit(task);
+        stateMachineExecutor.submit(task);
     }
 
     public Future<?> submitNetworkIO(Runnable task) {
@@ -89,7 +89,7 @@ public class ExecutorManager {
         shutdownExecutor(networkExecutor, "Network");
         shutdownExecutor(streamingExecutor, "Streaming");
         shutdownExecutor(messageExecutor, "Message");
-        shutdownExecutor(logExecutor, "Log");
+        shutdownExecutor(stateMachineExecutor, "Log");
         shutdownExecutor(stateExecutor, "State");
         shutdownExecutor(listeningExecutor, "Listening");
     }

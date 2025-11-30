@@ -2,6 +2,9 @@ package org.example.messaging;
 
 import com.google.protobuf.Message;
 import com.google.protobuf.MessageLite;
+import com.google.protobuf.ByteString;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Objects;
 
 public final class ServerMessage<T extends MessageLite> {
@@ -29,6 +32,16 @@ public final class ServerMessage<T extends MessageLite> {
 
     public String getMessageId() {
         return messageId;
+    }
+
+    public ByteString payloadHash() {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = digest.digest(payload.toByteArray());
+            return ByteString.copyFrom(hashBytes);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 MessageDigest unavailable", e);
+        }
     }
 
     @Override

@@ -9,4 +9,8 @@ public interface KeyValueStore<T> {
     void delete(int key);
     void putAll(Map<Integer, T> entries);
     void close();
+
+    void putClusterId(int key, int clusterId);
+    Integer getClusterId(int key);
+    void deleteClusterId(int key);
 }

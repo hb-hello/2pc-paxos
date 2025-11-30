@@ -55,6 +55,12 @@ public class LivenessTimer {
         }
     }
 
+    public void startIfNotRunning() {
+        if (!isRunning.get()) {
+            start();
+        }
+    }
+
     public void restart() {
         if (!isExecutingCallback()) {
             stop();

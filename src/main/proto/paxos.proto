@@ -37,25 +37,25 @@ message PromiseMessage {
 
 // Accept phase
 
-enum tpc_phase {
+enum Phase {
   PREPARE = 0;
   COMMIT = 1;
   ABORT = 2;
+  INTRA_SHARD = 3;
 }
 
 message AcceptMessage {
   Ballot ballot = 1;
   int64 sequence_number = 2;
-  tpc_phase phase = 3;
+  Phase phase = 3;
   ClientRequest request = 4;
 }
 
 message AcceptedMessage {
   Ballot ballot = 1;
   int64 sequence_number = 2;
-  tpc_phase phase = 3;
-  ClientRequest request = 4;
-  int32 sender_id = 5;
+  Phase phase = 3;
+  int32 sender_id = 4;
 }
 
 message NewViewMessage {
@@ -67,7 +67,7 @@ message NewViewMessage {
 message CommitMessage {
   Ballot ballot = 1;
   int64 sequence_number = 2;
-  tpc_phase phase = 3;
+  Phase phase = 3;
   ClientRequest request = 4;
 }
 

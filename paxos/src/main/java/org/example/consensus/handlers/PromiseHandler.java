@@ -35,7 +35,6 @@ public class PromiseHandler {
                     ballot);
             onQuorumReached.accept(ballot);
         }
-
     }
 
     public StreamObserver<PromiseMessage> handler() {

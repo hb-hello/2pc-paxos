@@ -11,6 +11,7 @@ import org.dizitart.no2.repository.ObjectRepository;
 import org.dizitart.no2.index.IndexType;
 
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class NitriteKeyValueStore<T> implements KeyValueStore<T> {
     private static final Logger logger = LogManager.getLogger(NitriteKeyValueStore.class);
@@ -20,6 +21,7 @@ public class NitriteKeyValueStore<T> implements KeyValueStore<T> {
     private final Class<T> entityClass;
     private Nitrite db;
     private ObjectRepository<T> repository;
+    private final Map<Integer, Integer> clusterIdMap = new ConcurrentHashMap<>();
 
     public NitriteKeyValueStore(int nodeId, String indexFieldName, Class<T> entityClass) {
         this.nodeId = nodeId;
@@ -116,5 +118,20 @@ public class NitriteKeyValueStore<T> implements KeyValueStore<T> {
         } finally {
             repository = null;
         }
+    }
+
+    @Override
+    public void putClusterId(int key, int clusterId) {
+        clusterIdMap.put(key, clusterId);
+    }
+
+    @Override
+    public Integer getClusterId(int key) {
+        return clusterIdMap.get(key);
+    }
+
+    @Override
+    public void deleteClusterId(int key) {
+        clusterIdMap.remove(key);
     }
 }

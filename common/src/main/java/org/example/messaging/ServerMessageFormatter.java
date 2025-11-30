@@ -54,11 +54,9 @@ public final class ServerMessageFormatter {
     }
 
     private static String formatAccepted(AcceptedMessage m) {
-        int clientId = m.getRequest().getClientId();
         return "Accepted{instance=" + m.getBallot().getInstance() +
                 ", seq=" + m.getSequenceNumber() +
                 ", phase=" + m.getPhase().name() +
-                ", txId=" + txIDFromRequest(m.getRequest()) +
                 "}";
     }
 

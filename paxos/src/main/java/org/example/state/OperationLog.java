@@ -2,13 +2,14 @@ package org.example.state;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.checkerframework.checker.units.qual.A;
 import org.example.ClientRequest;
+import org.example.Phase;
+import org.example.messaging.ServerMessage;
 
 import java.util.EnumMap;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class OperationLog {
@@ -23,7 +24,7 @@ public class OperationLog {
     public OperationLog() {
         this.STATUS_ORDER = new EnumMap<>(OperationStatus.class);
         STATUS_ORDER.put(OperationStatus.NONE, 0);
-        STATUS_ORDER.put(OperationStatus.PREPARED, 1);
+        STATUS_ORDER.put(OperationStatus.ACCEPTED, 1);
         STATUS_ORDER.put(OperationStatus.COMMITTED, 2);
         STATUS_ORDER.put(OperationStatus.EXECUTED, 3);
         STATUS_ORDER.put(OperationStatus.CHECKPOINTED, 4);
@@ -37,13 +38,18 @@ public class OperationLog {
     }
 
     // Leader path: allocate new seqNum and insert a NONE/PREPARED entry
-    public long addOperation(ClientRequest request, Ballot ballot) {
+    public long addOperation(ServerMessage<ClientRequest> request, Ballot ballot) {
+        return addOperationWithStatus(request, ballot, OperationStatus.NONE, Phase.PREPARE);
+    }
+
+    public long addOperationWithStatus(ServerMessage<ClientRequest> request, Ballot ballot, OperationStatus status, Phase phase) {
         long seq = nextSeqNum.getAndIncrement();
 
         OperationLogEntry entry = new OperationLogEntry(
                 request,
                 ballot,
-                OperationStatus.NONE
+                status,
+                phase
         );
 
         OperationLogEntry prev = entries.putIfAbsent(seq, entry);
@@ -54,21 +60,13 @@ public class OperationLog {
         return seq;
     }
 
-    // Follower / generic: ensure entry exists for a specific seqNum
-    // adds if null and return existing to be compared if present
-    public OperationLogEntry ensureEntry(long seqNum, ClientRequest request, Ballot ballot) {
-        return entries.compute(seqNum, (k, existing) -> {
-            if (existing == null) {
-                return new OperationLogEntry(request, ballot, OperationStatus.NONE);
-            }
-            // Keep existing request/ballot if already present
-            return existing;
-        });
-    }
-
-    public ClientRequest getRequest(long seqNum) {
+    public ServerMessage<ClientRequest> getRequest(long seqNum) {
         OperationLogEntry entry = entries.get(seqNum);
         return (entry != null) ? entry.request() : null;
+    }
+
+    public OperationLogEntry getEntry(long seqNum) {
+        return entries.get(seqNum);
     }
 
     public OperationStatus getStatus(long seqNum) {
@@ -86,7 +84,8 @@ public class OperationLog {
             return new OperationLogEntry(
                     oldEntry.request(),
                     oldEntry.ballot(),
-                    newStatus
+                    newStatus,
+                    oldEntry.phase()
             );
         });
 
@@ -108,10 +107,58 @@ public class OperationLog {
             return new OperationLogEntry(
                     oldEntry.request(),
                     oldEntry.ballot(),
-                    newStatus
+                    newStatus,
+                    oldEntry.phase()
             );
         });
 
         return result != null && result.status() == newStatus;
+    }
+
+    public boolean advancePhase(long seqNum, Phase newPhase) {
+        OperationLogEntry result = entries.computeIfPresent(seqNum, (k, oldEntry) -> {
+            Phase current = oldEntry.phase();
+            if (current == Phase.INTRA_SHARD) {
+                logger.warn("Illegal INTRA_SHARD phase transition {} -> {} for seq {}", current, newPhase, seqNum);
+                return oldEntry;
+            }
+            boolean validTransition = current == Phase.PREPARE &&
+                    (newPhase == Phase.COMMIT || newPhase == Phase.ABORT);
+            if (!validTransition) {
+                logger.warn("Illegal phase transition {} -> {} for seq {}", current, newPhase, seqNum);
+                return oldEntry;
+            }
+            return new OperationLogEntry(
+                    oldEntry.request(),
+                    oldEntry.ballot(),
+                    oldEntry.status(),
+                    newPhase
+            );
+        });
+
+        return result != null && result.phase() == newPhase;
+    }
+
+    public boolean setOperationWithStatus(long seqNum,
+                                          ServerMessage<ClientRequest> request,
+                                          Ballot ballot,
+                                          OperationStatus status,
+                                          Phase phase) {
+        AtomicBoolean updated = new AtomicBoolean(false);
+        entries.compute(seqNum, (k, oldEntry) -> {
+            if (oldEntry == null) {
+                updated.set(true);
+                return new OperationLogEntry(request, ballot, status, phase);
+            }
+
+            Ballot existingBallot = oldEntry.ballot();
+            if (existingBallot != null && existingBallot.isGreaterThan(ballot)) {
+                return oldEntry;
+            }
+
+            updated.set(true);
+            return new OperationLogEntry(request, ballot, status, phase);
+        });
+        return updated.get();
     }
 }

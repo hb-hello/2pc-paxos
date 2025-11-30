@@ -7,7 +7,7 @@ import org.apache.logging.log4j.Logger;
 import org.example.ClientReply;
 import org.example.ClientRequest;
 import org.example.ClientServiceGrpc;
-import org.example.TPCServer;
+import org.example.tpc.TPCServer;
 
 public class ClientService extends ClientServiceGrpc.ClientServiceImplBase {
     private static final Logger logger = LogManager.getLogger(ClientService.class);

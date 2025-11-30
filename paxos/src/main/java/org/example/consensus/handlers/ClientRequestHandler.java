@@ -23,19 +23,13 @@ public class ClientRequestHandler {
         logger.info("Handling client request: {}", request.getMessageId());
 
         state.runSync(() -> {
-            if (state.getRole() == Role.BACKUP) {
+            if (state.isBackup()) {
                 messageSender.forwardClientRequest(state.getLeaderId(), request);
-            } else if (state.getRole() == Role.CANDIDATE) {
+            } else if (state.isCandidate()) {
                 if (!state.hasSentPrepare()) {
                     leaderInitiationCallback.run();
                 }
-            } else if (state.getRole() == Role.LEADER) {
-                // Logic to send accept to all backups would go here
             }
         });
-
-        // if role is backup, forward client request to leader
-        // if role is candidate, check if we have a promise that hasn't expired and attempt to trigger leader election
-        // if role is leader, send accept to all backups
     }
 }

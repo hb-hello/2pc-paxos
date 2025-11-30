@@ -3,7 +3,7 @@ package org.example.state;
 import com.google.protobuf.MessageLite;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.example.NewViewMessage;
+import org.example.*;
 import org.example.messaging.ServerMessage;
 
 import java.util.concurrent.Callable;
@@ -110,8 +110,31 @@ public class PaxosState {
         return runSync(() -> role);
     }
 
+    public boolean isLeader() {
+        return runSync(() -> role == Role.LEADER);
+    }
+
+    public boolean isBackup() {
+        return runSync(() -> role == Role.BACKUP);
+    }
+
+    public boolean isCandidate() {
+        return runSync(() -> role == Role.CANDIDATE);
+    }
+
     public Ballot getBallot() {
         return runSync(() -> ballot);
+    }
+
+    public boolean updateBallot(Ballot newBallot) {
+        return runSync(() -> {
+            if (!ballot.isGreaterThan(newBallot)) {
+                ballot.setBallot(newBallot);
+                setSentPrepare(false);
+                return true;
+            }
+            return false;
+        });
     }
 
     public boolean hasSentPrepare() {
@@ -154,11 +177,11 @@ public class PaxosState {
         });
     }
 
-    public boolean updateBallot(Ballot newBallot) {
+    public boolean checkBallotAndTransitionToBackup(Ballot newBallot) {
         return runSync(() -> {
-            if (!ballot.isGreaterThan(newBallot)) {
-                ballot.setBallot(newBallot);
-                setSentPrepare(false);
+            if (ballot.equals(newBallot)) return true;
+            if (updateBallot(newBallot)) {
+                transitionToBackup();
                 return true;
             }
             return false;
@@ -167,6 +190,38 @@ public class PaxosState {
 
     public boolean trackMessageWithConsensus(ServerMessage<? extends MessageLite> message, int quorumRequired) {
         return messageTracker.addMessageWithConsensus(message, quorumRequired);
+    }
+
+    public OperationLog getOperationLog() {
+        return operationLog;
+    }
+
+    public long acceptRequest(ServerMessage<ClientRequest> request, Phase phase) {
+        return operationLog.addOperationWithStatus(request, ballot, OperationStatus.ACCEPTED, phase);
+    }
+
+    public boolean acceptRequest(ServerMessage<AcceptMessage> accept) {
+        return operationLog.setOperationWithStatus(
+                accept.payload().getSequenceNumber(),
+                new ServerMessage<>(accept.payload().getRequest()),
+                new Ballot(accept.payload().getBallot()),
+                OperationStatus.ACCEPTED,
+                accept.payload().getPhase()
+        );
+    }
+
+    public boolean commitRequest(ServerMessage<CommitMessage> commit) {
+        return operationLog.setOperationWithStatus(
+                commit.payload().getSequenceNumber(),
+                new ServerMessage<>(commit.payload().getRequest()),
+                new Ballot(commit.payload().getBallot()),
+                OperationStatus.COMMITTED,
+                commit.payload().getPhase()
+        );
+    }
+
+    public OperationLogEntry getLogEntry(long sequenceNumber) {
+        return operationLog.getEntry(sequenceNumber);
     }
 
     public NewViewMessage constructNewView() {

@@ -1,7 +1,7 @@
 package org.example.state;
 
 public enum OperationStatus {
-    PREPARED,
+    ACCEPTED,
     COMMITTED,
     EXECUTED,
     CHECKPOINTED,

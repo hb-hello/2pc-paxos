@@ -1,0 +1,45 @@
+package org.example.consensus.handlers;
+
+import io.grpc.stub.StreamObserver;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.example.AcceptMessage;
+import org.example.AcceptedMessage;
+import org.example.consensus.LivenessTimer;
+import org.example.messaging.ServerMessage;
+import org.example.state.Ballot;
+import org.example.state.PaxosState;
+
+public class AcceptHandler {
+    private static final Logger logger = LogManager.getLogger(AcceptHandler.class);
+
+    private final PaxosState state;
+    private final LivenessTimer clientRequestTimer;
+
+    public AcceptHandler(PaxosState state, LivenessTimer clientRequestTimer) {
+        this.state = state;
+        this.clientRequestTimer = clientRequestTimer;
+    }
+
+    public void handle(ServerMessage<AcceptMessage> accept, StreamObserver<AcceptedMessage> responseObserver) {
+        logger.info("Received accept message : {}", accept);
+
+        Ballot acceptBallot = new Ballot(accept.payload().getBallot());
+
+        if (state.checkBallotAndTransitionToBackup(acceptBallot) && state.acceptRequest(accept)) {
+            clientRequestTimer.startIfNotRunning();
+            AcceptedMessage acceptedMessage = AcceptedMessage.newBuilder()
+                    .setSequenceNumber(accept.payload().getSequenceNumber())
+                    .setSenderId(state.getServerId())
+                    .setBallot(accept.payload().getBallot())
+                    .setPhase(accept.payload().getPhase())
+                    .build();
+            responseObserver.onNext(acceptedMessage);
+            responseObserver.onCompleted();
+            logger.info("Sent accepted message : {}", acceptedMessage);
+        } else {
+            logger.info("Accept request rejected for ballot number: {}", acceptBallot);
+            responseObserver.onCompleted();
+        }
+    }
+}

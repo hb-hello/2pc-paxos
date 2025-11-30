@@ -5,13 +5,12 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.config.Config;
 import org.example.consensus.LivenessTimer;
-import org.example.consensus.handlers.AcceptedHandler;
-import org.example.consensus.handlers.ClientRequestHandler;
-import org.example.consensus.handlers.PrepareHandler;
-import org.example.consensus.handlers.PromiseHandler;
+import org.example.consensus.handlers.*;
 import org.example.messaging.PaxosMessageSender;
 import org.example.messaging.PaxosService;
 import org.example.messaging.ServerMessage;
+import org.example.state.OperationLog;
+import org.example.state.OperationLogEntry;
 import org.example.state.PaxosState;
 import org.example.state.Role;
 
@@ -35,6 +34,8 @@ public class PaxosServer {
     private final ClientRequestHandler clientRequestHandler;
     private final PrepareHandler prepareHandler;
     private final PromiseHandler promiseHandler;
+    private final NewViewHandler newViewHandler;
+    private final AcceptHandler acceptHandler;
     private final AcceptedHandler acceptedHandler;
 
     public PaxosServer(int serverId, ExecutorManager executorManager) {
@@ -46,12 +47,14 @@ public class PaxosServer {
         this.leaderElectionInProgress = new AtomicBoolean(false);
 
         this.paxosService = new PaxosService(this);
-        this.messageSender = new PaxosMessageSender(serverId, executorManager.getNetworkExecutor(), executorManager.getMessageExecutor());
+        this.messageSender = new PaxosMessageSender(serverId, executorManager.getNetworkExecutor());
 
         this.clientRequestHandler = new ClientRequestHandler(state, messageSender);
         this.prepareHandler = new PrepareHandler(state, promiseTimer);
         this.promiseHandler = new PromiseHandler(state, promiseTimer, this::triggerNewView);
-        this.acceptedHandler = new AcceptedHandler(state);
+        this.newViewHandler = new NewViewHandler(state, promiseTimer);
+        this.acceptHandler = new AcceptHandler(state, clientRequestTimer);
+        this.acceptedHandler = new AcceptedHandler(state, this::triggerCommit);
 
         logger.info("PaxosServer {} initialized.", serverId);
     }
@@ -75,17 +78,37 @@ public class PaxosServer {
         messageSender.setActive(active);
     }
 
+    public boolean isLeader() {
+        return state.isLeader();
+    }
+
+    public boolean isCandidate() {
+        return state.isCandidate();
+    }
+
+    public boolean isBackup() {
+        return state.isBackup();
+    }
+
+    public OperationLog getOperationLog() {
+        return state.getOperationLog();
+    }
+
     public void handleClientRequest(ServerMessage<ClientRequest> request) {
-        executorManager.submitMessageProcessing(() -> clientRequestHandler.handle(request, this::initiateLeaderElection));
+        // already called from within message processing thread
+        clientRequestHandler.handle(request, this::initiateLeaderElection);
     }
 
     public void handlePrepare(ServerMessage<PrepareMessage> prepareMessage, StreamObserver<PromiseMessage> responseObserver) {
         executorManager.submitMessageProcessing(() -> prepareHandler.handle(prepareMessage, responseObserver));
     }
 
-    public void handleNewView(NewViewMessage newView) {
-        promiseTimer.stop();
-        state.transitionToBackup();
+    public void handleNewView(NewViewMessage newView, StreamObserver<AcceptedMessage> responseObserver) {
+        executorManager.submitMessageProcessing(() -> newViewHandler.handle(newView, responseObserver));
+    }
+
+    public void handleAccept(ServerMessage<AcceptMessage> message, StreamObserver<AcceptedMessage> responseObserver) {
+        executorManager.submitMessageProcessing(() -> acceptHandler.handle(message, responseObserver));
     }
 
     public void initiateLeaderElection() {
@@ -111,15 +134,43 @@ public class PaxosServer {
         }
     }
 
+    public void triggerAccept(ServerMessage<ClientRequest> request, Phase phase) {
+        long seqNum = state.acceptRequest(request, phase);
+        clientRequestTimer.startIfNotRunning();
+        AcceptMessage acceptMessage = AcceptMessage.newBuilder()
+                .setBallot(state.getBallot().toProto())
+                .setRequest(request.payload())
+                .setSequenceNumber(seqNum)
+                .build();
+        if (state.isLeader()) messageSender.broadcastAccept(new ServerMessage<>(acceptMessage), acceptedHandler.handler());
+    }
+
+    public void triggerCommit(long sequenceNumber) {
+        OperationLogEntry entry = state.getLogEntry(sequenceNumber);
+        CommitMessage commit = CommitMessage.newBuilder()
+                .setSequenceNumber(sequenceNumber)
+                .setBallot(entry.ballot().toProto())
+                .setPhase(entry.phase())
+                .setRequest(entry.request().payload())
+                .build();
+        ServerMessage<CommitMessage> commitMessage = new ServerMessage<>(commit);
+        if (state.commitRequest(commitMessage)) {
+            //TODO: Call tpc onCommit hook here
+            messageSender.broadcastCommit(commitMessage);
+        }
+    }
+
     public void promiseTimerCallback() {
         state.runSync(() -> {
-            if (state.getRole() == Role.CANDIDATE && !leaderElectionInProgress.get()) {
+            if (state.isCandidate()) {
+                logger.info("Promise timer expired while in CANDIDATE role. Re-initiating leader election.");
                 initiateLeaderElection();
             }
         });
     }
 
     public void clientRequestTimerCallback() {
+        logger.info("Client request timer expired. Initiating leader election.");
         initiateLeaderElection();
     }
 }

@@ -26,6 +26,8 @@ public class Config {
     private static String serverExecutablePath;
 
     private static int quorumSize;
+    private static final HashMap<Integer, Integer> serverIdToClusterIndexMap = new HashMap<>();
+    private static final HashMap<Integer, List<Integer>> clusterIndexToServerIdMap = new HashMap<>();
 
     // Map of server id -> NodeDetails (in insertion order)
     private static final Map<Integer, NodeDetails> nodes = new LinkedHashMap<>();
@@ -89,6 +91,9 @@ public class Config {
             String host = "localhost";
             int port = serverPortStart + (i - 1);
             nodes.put(i, new NodeDetails(i, host, port));
+            int clusterIndex = (i - 1) / serverClusterSize;
+            serverIdToClusterIndexMap.put(i, clusterIndex);
+            clusterIndexToServerIdMap.computeIfAbsent(clusterIndex, k -> new ArrayList<>()).add(i);
         }
 
         quorumSize = (serverClusterSize / 2) + 1;
@@ -201,13 +206,22 @@ public class Config {
     public static List<Integer> getServerIdsInClusterExcept(int excludeId) {
         ensureInitialized();
         List<Integer> ids = new ArrayList<>();
-        //TODO: Add maps to identify cluster for a server
-        for (Integer id : nodes.keySet()) {
+        int clusterIndex = serverIdToClusterIndexMap.get(excludeId);
+        for (Integer id : clusterIndexToServerIdMap.get(clusterIndex)) {
             if (id != 0 && id != excludeId) {
                 ids.add(id);
             }
         }
         return ids;
+    }
+
+    public static int getServerClusterIndex(int serverId) {
+        ensureInitialized();
+        Integer index = serverIdToClusterIndexMap.get(serverId);
+        if (index == null) {
+            throw new IllegalArgumentException("No server found with id: " + serverId);
+        }
+        return index;
     }
 
     public static int getQuorumSize() {

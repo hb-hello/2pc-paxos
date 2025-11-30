@@ -12,11 +12,9 @@ import java.util.concurrent.ExecutorService;
 public class PaxosMessageSender extends MessageSender {
 
     private static final Logger logger = LogManager.getLogger(PaxosMessageSender.class);
-    private final ExecutorService messageExecutor;
 
-    public PaxosMessageSender(int nodeId, ExecutorService networkExecutor, ExecutorService messageExecutor) {
+    public PaxosMessageSender(int nodeId, ExecutorService networkExecutor) {
         super(nodeId, networkExecutor);
-        this.messageExecutor = messageExecutor;
     }
 
     public void forwardClientRequest(int targetNodeId, ServerMessage<ClientRequest> message) {
@@ -38,4 +36,17 @@ public class PaxosMessageSender extends MessageSender {
         }
     }
 
+    public void broadcastAccept(ServerMessage<AcceptMessage> message, StreamObserver<AcceptedMessage> responseObserver) {
+        logger.info("Broadcasting accept message to all Paxos nodes: {}", message);
+        for (int serverId : Config.getServerIdsInClusterExcept(nodeId)) {
+            stubManager.getPaxosAsyncStub(serverId).accept(message.payload(), responseObserver);
+        }
+    }
+
+    public void broadcastCommit(ServerMessage<CommitMessage> message) {
+        logger.info("Broadcasting commit message to all Paxos nodes: {}", message);
+        for (int serverId : Config.getServerIdsInClusterExcept(nodeId)) {
+            stubManager.getPaxosAsyncStub(serverId).commit(message.payload(), null);
+        }
+    }
 }

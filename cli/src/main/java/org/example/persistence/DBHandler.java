@@ -75,6 +75,7 @@ public class DBHandler {
                 }
                 for (KeyValueStore<Double> database : clusterDbs.values()) {
                     database.put(accountId, 10.0);
+                    database.putClusterId(accountId, clusterIndex);
                 }
             }
             logger.info("Database initialization complete.");

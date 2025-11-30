@@ -4,6 +4,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
 import org.example.persistence.KeyValueStore;
+import org.example.tpc.ExecutionMode;
 
 import java.util.Map;
 import java.util.Set;
@@ -42,6 +43,11 @@ public final class BankStateMachine implements StateMachine {
             throw new IllegalArgumentException("Account not present in balances: " + id);
         }
         return v;
+    }
+
+    public void restoreBalance(int accountId, double balance) {
+        database.put(accountId, balance);
+        modifiedBalances.put(accountId, balance);
     }
 
     @Override

@@ -1,4 +1,4 @@
-package org.example;
+package org.example.tpc;
 
 public enum ExecutionMode {
     BOTH,

@@ -1,5 +1,7 @@
 package org.example;
 
+import org.example.tpc.ExecutionMode;
+
 /**
  * State machine execution contract used by ServerState.
  */
