@@ -11,9 +11,10 @@ option java_multiple_files = true;
 service TPCService {
   rpc TPCPrepare (TPCPrepareMessage) returns (google.protobuf.Empty) {};
   rpc TPCPrepared (TPCPreparedMessage) returns (google.protobuf.Empty) {};
-  rpc TPCCommit (TPCCommitMessage) returns (google.protobuf.Empty) {};
-  rpc TPCAbort (TPCAbortMessage) returns (google.protobuf.Empty) {};
-  rpc TPCAck (TPCAckMessage) returns (google.protobuf.Empty) {};
+  rpc TPCCommit (TPCCommitMessage) returns (TPCAckMessage) {};
+  rpc TPCAbort (TPCAbortMessage) returns (TPCAckMessage) {};
+
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {};
 }
 
 message TPCPrepareMessage {
@@ -37,6 +38,4 @@ message TPCAbortMessage {
 }
 
 message TPCAckMessage {
-  string request_id = 1;
-  int32 sender_id = 2;
 }

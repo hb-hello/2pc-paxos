@@ -11,8 +11,9 @@ public final class MessageIndexHelper {
         if (msg instanceof ClientRequest cr) {
             return clientRequestIndex(cr);
         }
+        String messageIndex = String.valueOf(msg.hashCode());
         if (msg instanceof AcceptMessage am) {
-            return paxosIndex(
+            messageIndex = paxosIndex(
                     am.getBallot().getInstance(),
                     am.getBallot().getSenderId(),
                     am.getSequenceNumber(),
@@ -20,7 +21,7 @@ public final class MessageIndexHelper {
             );
         }
         if (msg instanceof AcceptedMessage am) {
-            return paxosIndex(
+            messageIndex = paxosIndex(
                     am.getBallot().getInstance(),
                     am.getBallot().getSenderId(),
                     am.getSequenceNumber(),
@@ -28,7 +29,7 @@ public final class MessageIndexHelper {
             );
         }
         if (msg instanceof CommitMessage cm) {
-            return paxosIndex(
+            messageIndex = paxosIndex(
                     cm.getBallot().getInstance(),
                     cm.getBallot().getSenderId(),
                     cm.getSequenceNumber(),
@@ -36,17 +37,32 @@ public final class MessageIndexHelper {
             );
         }
         if (msg instanceof PrepareMessage pm) {
-            return pm.getBallot().getInstance() + ":" + pm.getBallot().getSenderId();
+            messageIndex = pm.getBallot().getInstance() + ":" + pm.getBallot().getSenderId();
         }
         if (msg instanceof PromiseMessage pm) {
-            return pm.getBallot().getInstance() + ":" + pm.getSenderId();
+            messageIndex = pm.getBallot().getInstance() + ":" + pm.getSenderId();
+        }
+        if (msg instanceof NewViewMessage pm) {
+            messageIndex = pm.getBallot().getInstance() + ":" + pm.getBallot().getSenderId();
+        }
+        if (msg instanceof TPCPrepareMessage m) {
+            messageIndex = clientRequestIndex(m.getClientRequest());
+        }
+        if (msg instanceof TPCPreparedMessage m) {
+            messageIndex = m.getRequestId();
+        }
+        if (msg instanceof TPCCommitMessage m) {
+            messageIndex = m.getRequestId();
+        }
+        if (msg instanceof TPCAbortMessage m) {
+            messageIndex = m.getRequestId();
         }
 
         // Future tpc.proto messages go here:
         // if (msg instanceof TpcPrepareMessage t) { ... }
 
         // Generic fallback: still stable per-process for debugging, but not for protocol logic.
-        return msg.getClass().getSimpleName() + ":" + msg.hashCode();
+        return msg.getClass().getSimpleName() + ":" + messageIndex;
     }
 
     public static int extractSenderId(MessageLite msg) {

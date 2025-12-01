@@ -42,7 +42,7 @@ public class AcceptedHandler {
 
             @Override
             public void onError(Throwable throwable) {
-                logger.error("Error receiving PromiseMessage: {}", throwable.getMessage());
+                logger.error("Error receiving Accepted message: {}", throwable.getMessage());
             }
 
             @Override

@@ -15,6 +15,8 @@ public class ExecutorManager {
     private final ExecutorService streamingExecutor;
     private final ExecutorService messageExecutor;
     private final ExecutorService listeningExecutor;
+    private final ScheduledExecutorService timerExecutor;
+    private final ScheduledExecutorService retryExecutor;
 
 
 
@@ -47,6 +49,10 @@ public class ExecutorManager {
         // Executor for listening to incoming messages - for use with grpc server
         this.listeningExecutor = Executors.newSingleThreadExecutor(createNamedThreadFactory("grpc-listener"));
 
+        this.timerExecutor = Executors.newScheduledThreadPool(4, createNamedThreadFactory("timer-executor"));
+
+        this.retryExecutor = Executors.newScheduledThreadPool(4, createNamedThreadFactory("retry-manager"));
+
     }
 
     public ExecutorService getStateExecutor() {
@@ -59,6 +65,14 @@ public class ExecutorManager {
 
     public ExecutorService getStateMachineExecutor() {
         return stateMachineExecutor;
+    }
+
+    public ScheduledExecutorService getTimerExecutor() {
+        return timerExecutor;
+    }
+
+    public ScheduledExecutorService getRetryExecutor() {
+        return retryExecutor;
     }
 
     public void submitStateTransition(Runnable task) {
@@ -81,8 +95,8 @@ public class ExecutorManager {
         messageExecutor.submit(task);
     }
 
-    public Future<?> submitListeningTask(Runnable task) {
-        return listeningExecutor.submit(task);
+    public void submitListeningTask(Runnable task) {
+        listeningExecutor.submit(task);
     }
 
     public void shutdown() {

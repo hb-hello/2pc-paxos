@@ -24,8 +24,9 @@ public class PaxosService extends PaxosServiceGrpc.PaxosServiceImplBase {
     }
 
     public void newView(NewViewMessage request, StreamObserver<AcceptedMessage> responseObserver) {
-        logger.info("Received NewViewMessage for ballot number: {}", new Ballot(request.getBallot()));
-        server.handleNewView(request, responseObserver);
+        ServerMessage<NewViewMessage> message = new ServerMessage<>(request);
+        logger.info("Received NewViewMessage : {}", message);
+        server.handleNewView(message, responseObserver);
     }
 
     public void accept(AcceptMessage request, StreamObserver<AcceptedMessage> responseObserver) {
@@ -37,6 +38,7 @@ public class PaxosService extends PaxosServiceGrpc.PaxosServiceImplBase {
     public void commit(CommitMessage request, StreamObserver<Empty> responseObserver) {
         ServerMessage<CommitMessage> message = new ServerMessage<>(request);
         logger.info("Received Commit message: {}", message);
+        server.handleCommit(message);
     }
 
     @Override

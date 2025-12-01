@@ -33,7 +33,8 @@ public class PrepareHandler {
                     .build();
             responseObserver.onNext(promise);
             responseObserver.onCompleted();
-            logger.info("Sent Promise message: {}", promise);
+            promiseTimer.restart();
+            logger.info("Sent Promise message: {}", new ServerMessage<>(promise));
         }
     }
 }

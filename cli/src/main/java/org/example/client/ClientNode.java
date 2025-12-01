@@ -9,7 +9,7 @@ import org.example.messaging.CLIMessageSender;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 
 public class ClientNode {
 
@@ -18,12 +18,14 @@ public class ClientNode {
     // Max total attempts: 1 leader try + (MAX_BROADCAST_ROUNDS * full-cluster broadcasts)
     private static final int MAX_BROADCAST_ROUNDS = 3;
 
-    private final int clientId;
     private final CLIMessageSender messageSender;
     private final Map<Integer, Integer> accountIdToClusterIndex;
     private final Map<Integer, Integer> clusterIndexLeaderId;
     private final Map<Integer, int[]> clusterIndexNodeIds;
     private final Map<PendingRequestKey, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
+
+    // Single scheduler for client-side timeouts
+    private final ScheduledExecutorService scheduler;
 
     private volatile ClientMetricsListener metricsListener;
 
@@ -31,17 +33,16 @@ public class ClientNode {
         this.metricsListener = listener;
     }
 
-    public ClientNode(int clientId,
-                      CLIMessageSender messageSender,
-                      Map<Integer, Integer> accountIdToClusterIndex) {
-        this.clientId = clientId;
+    public ClientNode(CLIMessageSender messageSender,
+                      Map<Integer, Integer> accountIdToClusterIndex, ScheduledExecutorService scheduler) {
         this.messageSender = messageSender;
         this.accountIdToClusterIndex = accountIdToClusterIndex;
+        this.scheduler = scheduler;
         this.clusterIndexLeaderId = new HashMap<>();
         this.clusterIndexNodeIds = new HashMap<>();
 
         int clusterCount = Config.getServerClusterCount();
-        int clusterSize = Config.getServerClusterSize(); // 3 in the base config[attached_file:2]
+        int clusterSize = Config.getServerClusterSize(); // 3 in the base config
 
         for (int clusterIdx = 0; clusterIdx < clusterCount; clusterIdx++) {
             int leaderId = clusterIdx * clusterSize + 1;
@@ -96,7 +97,7 @@ public class ClientNode {
                         .setSender(sender)
                         .setReceiver(receiver)
                         .setAmount(amount)
-                        .build(); // adjusted proto with int fields in your code
+                        .build();
 
                 Operation op = Operation.newBuilder()
                         .setTransfer(transfer)
@@ -144,7 +145,7 @@ public class ClientNode {
     private void buildAndSendClientRequest(Operation operation, int accountId) {
         boolean readOnly = operation.getOpCase() == Operation.OpCase.BALANCE_REQUEST;
         ClientRequest request = ClientRequest.newBuilder()
-                .setTimestamp(System.currentTimeMillis()) // client-side timestamp[attached_file:1]
+                .setTimestamp(System.currentTimeMillis())
                 .setClientId(accountId)
                 .setOperation(operation)
                 .setIsReadOnly(readOnly)
@@ -156,9 +157,8 @@ public class ClientNode {
     /**
      * Core retry logic:
      * - First attempt goes to the cluster leader.
-     * - On timeout/transport error, broadcast to all nodes in that cluster.
-     * - If a full broadcast round fails, repeat up to MAX_BROADCAST_ROUNDS.
-     * All of this is based on ListenableFuture callbacks; no sleeping or blocking.
+     * - On timeout, broadcast to all nodes in that cluster (round 1).
+     * - On subsequent timeouts, repeat broadcasts up to MAX_BROADCAST_ROUNDS.
      */
     private void sendClientRequestWithRetry(ClientRequest request) {
         int targetClusterIndex;
@@ -189,14 +189,36 @@ public class ClientNode {
                 ctx.request.getTimestamp(), leaderNodeId, ctx.clusterIndex);
 
         messageSender.sendClientRequestWithDeadline(leaderNodeId, ctx.request, deadlineMillis);
+
+        // Schedule timeout to trigger broadcast if no reply
+        PendingRequestKey key = PendingRequestKey.of(ctx.request);
+        scheduler.schedule(() -> onRequestTimeout(key),
+                deadlineMillis, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Timeout handler for both leader attempt and broadcast rounds.
+     * If the request is still not completed, start or advance a broadcast round.
+     */
+    private void onRequestTimeout(PendingRequestKey key) {
+        PendingRequest ctx = pendingRequests.get(key);
+        if (ctx == null) {
+            return; // already completed and removed
+        }
+        synchronized (ctx) {
+            if (ctx.completed) {
+                return;
+            }
+            startNextBroadcastRoundLocked(ctx);
+        }
     }
 
     private void handleReplyFromNode(PendingRequest ctx,
                                      int nodeId,
                                      ClientReply reply,
                                      boolean fromBroadcast) {
-        long latency = 0L;
-        ClientRequest completedRequest = null;
+        long latency;
+        ClientRequest completedRequest;
         synchronized (ctx) {
             if (ctx.completed) {
                 return;
@@ -218,7 +240,8 @@ public class ClientNode {
     public void handleClientReply(ClientReply reply) {
         PendingRequest ctx = pendingRequests.get(PendingRequestKey.of(reply));
         if (ctx == null) {
-            logger.warn("No pending request found for reply timestamp {} client {}", reply.getTimestamp(), reply.getClientId());
+            logger.warn("No pending request found for reply timestamp {} client {}",
+                    reply.getTimestamp(), reply.getClientId());
             return;
         }
         handleReplyFromNode(ctx, reply.getSenderId(), reply, false);
@@ -241,29 +264,27 @@ public class ClientNode {
 
         long deadlineMillis = Config.getClientTimeoutMillis();
 
-        logger.debug("Broadcast round {} for request {} to cluster {}",
+        logger.info("Broadcast round {} for request {} to cluster {}",
                 ctx.broadcastRound, ctx.request.getTimestamp(), ctx.clusterIndex);
 
-        // Important: we can send RPCs outside the synchronized block to avoid
-        // holding the lock while scheduling network calls.
-        // Copy state we need first:
-        ClientRequest request = ctx.request.toBuilder().setIsReadOnly(false).build();
+        // Copy request and release lock before sending
+        ClientRequest request = ctx.request.toBuilder()
+                .setIsReadOnly(false)
+                .build();
 
-        // Release lock before actually sending
-        // (we know ctx.broadcastRound and pendingBroadcastResponses are set)
-        // NOTE: we must NOT touch ctx fields after this point without re-acquiring the lock.
-        // So we capture what we need into locals first.
+        PendingRequestKey key = PendingRequestKey.of(ctx.request);
 
-        // Send RPCs
+        // Schedule next timeout for this broadcast round
+        scheduler.schedule(() -> onRequestTimeout(key),
+                deadlineMillis, TimeUnit.MILLISECONDS);
+
+        // Send RPCs (outside synchronized block)
         for (int nodeId : nodeIds) {
             messageSender.sendClientRequestWithDeadline(nodeId, request, deadlineMillis);
         }
     }
 
-
-
     private void handleFail(NodeId nodeId) {
-        // TODO: send F request (fail node) via CLI/control service
         try {
             Thread.sleep(50);
             messageSender.failNode(nodeId);
@@ -274,7 +295,6 @@ public class ClientNode {
     }
 
     private void handleRecover(NodeId nodeId) {
-        // TODO: send R request (recover node) via CLI/control service
         try {
             Thread.sleep(50);
             messageSender.recoverNode(nodeId);
@@ -286,7 +306,6 @@ public class ClientNode {
 
     /**
      * Per-client-request state for retry/broadcast logic.
-     * Lives only as long as its futures and callbacks are alive.
      */
     private static final class PendingRequest {
         final ClientRequest request;

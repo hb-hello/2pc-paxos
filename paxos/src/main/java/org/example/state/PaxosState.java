@@ -10,6 +10,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.function.Consumer;
 
 public class PaxosState {
     private static final Logger logger = LogManager.getLogger(PaxosState.class);
@@ -26,13 +27,13 @@ public class PaxosState {
 
     private boolean sentPrepare = false;
 
-    public PaxosState(int serverId, ExecutorService stateExec) {
+    public PaxosState(int serverId, ExecutorService stateExec, Consumer<ServerMessage<ClientRequest>> onNewClientRequest) {
         this.serverId = serverId;
         this.stateExec = stateExec;
         this.ballot = new Ballot(0, serverId);
         this.leaderId = -1; // No leader initially
         this.role = Role.CANDIDATE;
-        this.operationLog = new OperationLog();
+        this.operationLog = new OperationLog(onNewClientRequest);
         this.messageTracker = new ServerMessageTracker();
     }
 
@@ -196,12 +197,20 @@ public class PaxosState {
         return operationLog;
     }
 
+    public boolean hasRequestsWaitingToExecute() {
+        return operationLog.hasRequestsWaitingToExecute();
+    }
+
     public PromiseMessage getPromiseMessage() {
         return operationLog.getPromiseMessageWithLogs();
     }
 
     public long acceptRequest(ServerMessage<ClientRequest> request, Phase phase) {
         return operationLog.addOperationWithStatus(request, ballot, OperationStatus.ACCEPTED, phase);
+    }
+
+    public boolean acceptRequestWithSeqNum(ServerMessage<ClientRequest> request, Phase phase, long seqNum) {
+        return operationLog.setOperationWithStatus(seqNum, request, ballot, OperationStatus.ACCEPTED, phase);
     }
 
     public boolean acceptRequest(ServerMessage<AcceptMessage> accept) {
@@ -228,9 +237,7 @@ public class PaxosState {
         return operationLog.getEntry(sequenceNumber);
     }
 
-    public NewViewMessage constructNewView() {
-        // take a copy of all promise messages for current ballot
-        // take a snapshot of pending client requests
-        return NewViewMessage.newBuilder().setBallot(ballot.toProto()).build();
+    public NewViewMessage getNewView() {
+        return operationLog.getNewViewMessageWithLogs().toBuilder().setBallot(ballot.toProto()).build();
     }
 }

@@ -12,14 +12,27 @@ public final class ServerMessageFormatter {
             return formatPrepare(m);
         } else if (msg instanceof PromiseMessage m) {
             return formatPromise(m);
-        } else if (msg instanceof AcceptMessage m) {
+        } else if (msg instanceof NewViewMessage m) {
+            return formatNewView(m);
+        }
+        else if (msg instanceof AcceptMessage m) {
             return formatAccept(m);
+        } else if (msg instanceof AcceptedMessage m) {
+            return formatAccepted(m);
         } else if (msg instanceof CommitMessage m) {
             return formatCommit(m);
         } else if (msg instanceof ClientRequest m) {
             return formatClientRequest(m);
         } else if (msg instanceof ClientReply m) {
             return formatClientReply(m);
+        } else if (msg instanceof TPCPrepareMessage m) {
+            return formatTPCPrepare(m);
+        } else if (msg instanceof TPCPreparedMessage m) {
+            return formatTPCPrepared(m);
+        } else if (msg instanceof TPCCommitMessage m) {
+            return formatTPCCommit(m);
+        } else if (msg instanceof TPCAbortMessage m) {
+            return formatTPCAbort(m);
         }
         // When tpc.proto exists, add:
         // else if (msg instanceof TpcPrepareMessage m) { ... }
@@ -37,7 +50,16 @@ public final class ServerMessageFormatter {
     private static String formatPromise(PromiseMessage m) {
         return "Promise{instance=" + m.getBallot().getInstance() +
                 ", sender=" + m.getSenderId() +
-                ", acceptLogSize=" + m.getAcceptLogCount() +
+                ", acceptMessageLogCount=" + m.getAcceptLogCount() +
+                ", commitMessageLogCount=" + m.getCommitLogCount() +
+                "}";
+    }
+
+    private static String formatNewView(NewViewMessage m) {
+        return "NewView{instance=" + m.getBallot().getInstance() +
+                ", sender=" + m.getBallot().getSenderId() +
+                ", acceptMessageLogCount=" + m.getAcceptLogCount() +
+                ", commitMessageLogCount=" + m.getCommitLogCount() +
                 "}";
     }
 
@@ -57,6 +79,7 @@ public final class ServerMessageFormatter {
         return "Accepted{instance=" + m.getBallot().getInstance() +
                 ", seq=" + m.getSequenceNumber() +
                 ", phase=" + m.getPhase().name() +
+                ", sender=" + m.getSenderId() +
                 "}";
     }
 
@@ -89,6 +112,30 @@ public final class ServerMessageFormatter {
                 ", sender=" + m.getSenderId() +
                 ", ts=" + m.getTimestamp() +
                 ", " + result +
+                "}";
+    }
+
+    private static String formatTPCPrepare(TPCPrepareMessage m) {
+        return "TPCPrepare{request=" + formatClientRequest(m.getClientRequest()) +
+                ", sender=" + m.getSenderId() +
+                "}";
+    }
+
+    private static String formatTPCPrepared(TPCPreparedMessage m) {
+        return "TPCPrepared{requestId=" + m.getRequestId() +
+                ", sender=" + m.getSenderId() +
+                "}";
+    }
+
+    private static String formatTPCCommit(TPCCommitMessage m) {
+        return "TPCCommit{requestId=" + m.getRequestId() +
+                ", sender=" + m.getSenderId() +
+                "}";
+    }
+
+    private static String formatTPCAbort(TPCAbortMessage m) {
+        return "TPCAbort{requestId=" + m.getRequestId() +
+                ", sender=" + m.getSenderId() +
                 "}";
     }
 }

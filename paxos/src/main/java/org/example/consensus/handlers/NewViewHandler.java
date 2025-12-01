@@ -23,9 +23,8 @@ public class NewViewHandler {
         this.promiseTimer = promiseTimer;
     }
 
-    public void handle(NewViewMessage newView, StreamObserver<AcceptedMessage> responseObserver) {
-        logger.info("Received new view message : {}", newView);
-
+    public void handle(ServerMessage<NewViewMessage> newViewMessage, StreamObserver<AcceptedMessage> responseObserver) {
+        NewViewMessage newView = newViewMessage.payload();
         Ballot newViewBallot = new Ballot(newView.getBallot());
 
         if (state.checkBallotAndTransitionToBackup(newViewBallot)) {

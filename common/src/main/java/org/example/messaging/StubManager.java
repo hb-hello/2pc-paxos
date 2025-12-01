@@ -8,6 +8,7 @@ import com.google.protobuf.Empty;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import io.grpc.stub.StreamObserver;
+import org.example.TPCServiceGrpc;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -29,16 +30,19 @@ public class StubManager {
     private static final Map<Integer, CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceFutureStub>> cliStubs = new ConcurrentHashMap<>();
     private static final Map<Integer, CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceFutureStub>> paxosStubs = new ConcurrentHashMap<>();
     private static final Map<Integer, CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceFutureStub>> clientStubs = new ConcurrentHashMap<>();
+    private static final Map<Integer, CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceFutureStub>> tpcStubs = new ConcurrentHashMap<>();
 
     // Async stub pools for each service
     private static final Map<Integer, CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceStub>> cliAsyncStubs = new ConcurrentHashMap<>();
     private static final Map<Integer, CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceStub>> paxosAsyncStubs = new ConcurrentHashMap<>();
     private static final Map<Integer, CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceStub>> clientAsyncStubs = new ConcurrentHashMap<>();
+    private static final Map<Integer, CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceStub>> tpcAsyncStubs = new ConcurrentHashMap<>();
 
     // Blocking stub pools for each service
     private static final Map<Integer, CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceBlockingStub>> cliBlockingStubs = new ConcurrentHashMap<>();
     private static final Map<Integer, CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceBlockingStub>> paxosBlockingStubs = new ConcurrentHashMap<>();
     private static final Map<Integer, CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceBlockingStub>> clientBlockingStubs = new ConcurrentHashMap<>();
+    private static final Map<Integer, CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceBlockingStub>> tpcBlockingStubs = new ConcurrentHashMap<>();
 
     public StubManager(int serverIdToExclude, ExecutorService networkExecutor) {
         this.serverIdToExclude = serverIdToExclude;
@@ -59,40 +63,49 @@ public class StubManager {
             CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceFutureStub> cliStubPool = new CopyOnWriteArrayList<>();
             CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceFutureStub> paxosStubPool = new CopyOnWriteArrayList<>();
             CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceFutureStub> clientStubPool = new CopyOnWriteArrayList<>();
+            CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceFutureStub> tpcStubPool = new CopyOnWriteArrayList<>();
 
             CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceBlockingStub> cliBlockingPool = new CopyOnWriteArrayList<>();
             CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceBlockingStub> paxosBlockingPool = new CopyOnWriteArrayList<>();
             CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceBlockingStub> clientBlockingPool = new CopyOnWriteArrayList<>();
+            CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceBlockingStub> tpcBlockingPool = new CopyOnWriteArrayList<>();
 
             CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceStub> cliAsyncPool = new CopyOnWriteArrayList<>();
             CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceStub> paxosAsyncPool = new CopyOnWriteArrayList<>();
             CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceStub> clientAsyncPool = new CopyOnWriteArrayList<>();
+            CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceStub> tpcAsyncPool = new CopyOnWriteArrayList<>();
 
             for (int i = 0; i < channelManager.getPoolSize(); i++) {
                 ManagedChannel channel = channelManager.getChannelPools().get(nodeId).get(i);
                 cliStubPool.add(CLIServiceGrpc.newFutureStub(channel));
                 paxosStubPool.add(PaxosServiceGrpc.newFutureStub(channel));
                 clientStubPool.add(ClientServiceGrpc.newFutureStub(channel));
+                tpcStubPool.add(TPCServiceGrpc.newFutureStub(channel));
 
                 cliBlockingPool.add(CLIServiceGrpc.newBlockingStub(channel));
                 paxosBlockingPool.add(PaxosServiceGrpc.newBlockingStub(channel));
                 clientBlockingPool.add(ClientServiceGrpc.newBlockingStub(channel));
+                tpcBlockingPool.add(TPCServiceGrpc.newBlockingStub(channel));
 
                 cliAsyncPool.add(CLIServiceGrpc.newStub(channel));
                 paxosAsyncPool.add(PaxosServiceGrpc.newStub(channel));
                 clientAsyncPool.add(ClientServiceGrpc.newStub(channel));
+                tpcAsyncPool.add(TPCServiceGrpc.newStub(channel));
             }
             cliStubs.put(nodeId, cliStubPool);
             paxosStubs.put(nodeId, paxosStubPool);
             clientStubs.put(nodeId, clientStubPool);
+            tpcStubs.put(nodeId, tpcStubPool);
 
             cliBlockingStubs.put(nodeId, cliBlockingPool);
             paxosBlockingStubs.put(nodeId, paxosBlockingPool);
             clientBlockingStubs.put(nodeId, clientBlockingPool);
+            tpcBlockingStubs.put(nodeId, tpcBlockingPool);
 
             cliAsyncStubs.put(nodeId, cliAsyncPool);
             paxosAsyncStubs.put(nodeId, paxosAsyncPool);
             clientAsyncStubs.put(nodeId, clientAsyncPool);
+            tpcAsyncStubs.put(nodeId, tpcAsyncPool);
         }
     }
 
@@ -133,6 +146,22 @@ public class StubManager {
         CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceFutureStub> pool = clientStubs.get(nodeId);
         if (pool == null || pool.isEmpty())
             throw new IllegalStateException("No Client stub pool available for node " + nodeId);
+
+        AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
+        if (rr == null)
+            throw new IllegalStateException("No round-robin index for node " + nodeId);
+
+        int idx = Math.abs(rr.getAndIncrement() % channelManager.getPoolSize());
+        return pool.get(idx);
+    }
+
+    public TPCServiceGrpc.TPCServiceFutureStub getTPCStub(int nodeId) {
+        if (channelManager == null)
+            throw new IllegalStateException("ChannelManager not initialized");
+
+        CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceFutureStub> pool = tpcStubs.get(nodeId);
+        if (pool == null || pool.isEmpty())
+            throw new IllegalStateException("No TPC stub pool available for node " + nodeId);
 
         AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
         if (rr == null)
@@ -190,6 +219,22 @@ public class StubManager {
         return pool.get(idx);
     }
 
+    public TPCServiceGrpc.TPCServiceStub getTPCAsyncStub(int nodeId) {
+        if (channelManager == null)
+            throw new IllegalStateException("ChannelManager not initialized");
+
+        CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceStub> pool = tpcAsyncStubs.get(nodeId);
+        if (pool == null || pool.isEmpty())
+            throw new IllegalStateException("No TPC async stub pool available for node " + nodeId);
+
+        AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
+        if (rr == null)
+            throw new IllegalStateException("No round-robin index for node " + nodeId);
+
+        int idx = Math.abs(rr.getAndIncrement() % channelManager.getPoolSize());
+        return pool.get(idx);
+    }
+
     // Blocking stub accessors
     public CLIServiceGrpc.CLIServiceBlockingStub getCLIBlockingStub(int nodeId) {
         if (channelManager == null)
@@ -230,6 +275,22 @@ public class StubManager {
         CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceBlockingStub> pool = clientBlockingStubs.get(nodeId);
         if (pool == null || pool.isEmpty())
             throw new IllegalStateException("No Client blocking stub pool available for node " + nodeId);
+
+        AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
+        if (rr == null)
+            throw new IllegalStateException("No round-robin index for node " + nodeId);
+
+        int idx = Math.abs(rr.getAndIncrement() % channelManager.getPoolSize());
+        return pool.get(idx);
+    }
+
+    public TPCServiceGrpc.TPCServiceBlockingStub getTPCBlockingStub(int nodeId) {
+        if (channelManager == null)
+            throw new IllegalStateException("ChannelManager not initialized");
+
+        CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceBlockingStub> pool = tpcBlockingStubs.get(nodeId);
+        if (pool == null || pool.isEmpty())
+            throw new IllegalStateException("No TPC blocking stub pool available for node " + nodeId);
 
         AtomicInteger rr = channelManager.getRoundRobinIndexes().get(nodeId);
         if (rr == null)
@@ -506,6 +567,95 @@ public class StubManager {
                         return;
                     } catch (Exception e) {
                         logger.debug("Warmup async ping to node {} Client stub failed: {}", nodeId, e.getMessage());
+                    }
+                    try {
+                        Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+
+            CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceBlockingStub> tpcBlockingPool = tpcBlockingStubs.get(nodeId);
+            if (tpcBlockingPool != null) {
+                for (TPCServiceGrpc.TPCServiceBlockingStub stub : tpcBlockingPool) {
+                    try {
+                        stub.withDeadlineAfter(PER_CALL_DEADLINE_SECONDS, TimeUnit.SECONDS)
+                                .ping(Empty.getDefaultInstance());
+                        logger.debug("Warmup TPC blocking ping successful to node {}", nodeId);
+                    } catch (Exception e) {
+                        logger.debug("Warmup ping to node {} TPC blocking stub failed: {}", nodeId, e.getMessage());
+                    }
+                    try {
+                        Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+
+            CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceFutureStub> tpcFuturePool = tpcStubs.get(nodeId);
+            if (tpcFuturePool != null) {
+                for (TPCServiceGrpc.TPCServiceFutureStub stub : tpcFuturePool) {
+                    try {
+                        stub.withDeadlineAfter(PER_CALL_DEADLINE_SECONDS, TimeUnit.SECONDS)
+                                .ping(Empty.getDefaultInstance())
+                                .get(PER_CALL_DEADLINE_SECONDS, TimeUnit.SECONDS);
+                        logger.debug("Warmup TPC future ping successful to node {}", nodeId);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    } catch (Exception e) {
+                        logger.debug("Warmup ping to node {} TPC future stub failed: {}", nodeId, e.getMessage());
+                    }
+                    try {
+                        Thread.sleep(PAUSE_BETWEEN_PINGS_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+
+            CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceStub> tpcAsyncPool = tpcAsyncStubs.get(nodeId);
+            if (tpcAsyncPool != null) {
+                for (TPCServiceGrpc.TPCServiceStub stub : tpcAsyncPool) {
+                    try {
+                        CountDownLatch latch = new CountDownLatch(1);
+                        final boolean[] success = new boolean[1];
+                        final Throwable[] asyncError = new Throwable[1];
+                        stub.withDeadlineAfter(PER_CALL_DEADLINE_SECONDS, TimeUnit.SECONDS)
+                                .ping(Empty.getDefaultInstance(), new StreamObserver<>() {
+                                    @Override
+                                    public void onNext(Empty value) {
+                                    }
+
+                                    @Override
+                                    public void onError(Throwable t) {
+                                        asyncError[0] = t;
+                                        latch.countDown();
+                                    }
+
+                                    @Override
+                                    public void onCompleted() {
+                                        success[0] = true;
+                                        latch.countDown();
+                                    }
+                                });
+                        if (!latch.await(PER_CALL_DEADLINE_SECONDS, TimeUnit.SECONDS)) {
+                            logger.debug("Warmup async TPC ping to node {} timed out", nodeId);
+                        } else if (success[0]) {
+                            logger.debug("Warmup TPC async ping successful to node {}", nodeId);
+                        } else if (asyncError[0] != null) {
+                            logger.debug("Warmup ping to node {} TPC async stub failed: {}", nodeId, asyncError[0].getMessage());
+                        }
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    } catch (Exception e) {
+                        logger.debug("Warmup async ping to node {} TPC stub failed: {}", nodeId, e.getMessage());
                     }
                     try {
                         Thread.sleep(PAUSE_BETWEEN_PINGS_MS);

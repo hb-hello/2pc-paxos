@@ -22,8 +22,6 @@ public class AcceptHandler {
     }
 
     public void handle(ServerMessage<AcceptMessage> accept, StreamObserver<AcceptedMessage> responseObserver) {
-        logger.info("Received accept message : {}", accept);
-
         Ballot acceptBallot = new Ballot(accept.payload().getBallot());
 
         if (state.checkBallotAndTransitionToBackup(acceptBallot) && state.acceptRequest(accept)) {

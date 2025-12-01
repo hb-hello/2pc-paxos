@@ -4,7 +4,6 @@ import com.google.protobuf.Empty;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.example.ClientReply;
 import org.example.ClientRequest;
 import org.example.ClientServiceGrpc;
 import org.example.tpc.TPCServer;

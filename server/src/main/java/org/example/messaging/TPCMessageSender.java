@@ -1,12 +1,13 @@
 package org.example.messaging;
 
+import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.example.ClientReply;
-import org.example.TPCCommitMessage;
-import org.example.TPCPrepareMessage;
+import org.example.*;
+import org.example.config.Config;
 
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class TPCMessageSender extends MessageSender {
 
@@ -18,16 +19,33 @@ public class TPCMessageSender extends MessageSender {
 
     public void sendPrepare(int targetNodeId, ServerMessage<TPCPrepareMessage> prepare) {
         logger.info("Sending TPC Prepare to node {} : {}", targetNodeId, prepare);
-        // add stubs for tpc service
+        stubManager.getTPCStub(targetNodeId).tPCPrepare(prepare.payload());
     }
 
-    public void sendCommit(int targetNodeId, ServerMessage<TPCCommitMessage> prepare) {
-        logger.info("Sending TPC Commit to node {} : {}", targetNodeId, prepare);
+    public void sendCommit(int targetNodeId, ServerMessage<TPCCommitMessage> commit, StreamObserver<TPCAckMessage> responseObserver) {
+        logger.info("Sending TPC Commit to node {} : {}", targetNodeId, commit);
+        stubManager.getTPCAsyncStub(targetNodeId).withDeadlineAfter(Config.getServerTimeoutMillis(), TimeUnit.MILLISECONDS).tPCCommit(commit.payload(), responseObserver);
+    }
+
+    public void broadcastCommitToCluster(int targetNodeId, ServerMessage<TPCCommitMessage> commit, StreamObserver<TPCAckMessage> observer) {
+        for (int nodeId : Config.getServerIdsInCluster(Config.getServerClusterIndex(targetNodeId))) {
+            sendCommit(nodeId, commit, observer);
+        }
+    }
+
+    public void sendAbort(int targetNodeId, ServerMessage<TPCAbortMessage> abort, StreamObserver<TPCAckMessage> responseObserver) {
+        logger.info("Sending TPC Abort to node {} : {}", targetNodeId, abort);
+        stubManager.getTPCAsyncStub(targetNodeId).withDeadlineAfter(Config.getServerTimeoutMillis(), TimeUnit.MILLISECONDS).tPCAbort(abort.payload(), responseObserver);
+    }
+
+    public void broadcastAbortToCluster(int targetNodeId, ServerMessage<TPCAbortMessage> abort, StreamObserver<TPCAckMessage> observer) {
+        for (int nodeId : Config.getServerIdsInCluster(Config.getServerClusterIndex(targetNodeId))) {
+            sendAbort(nodeId, abort, observer);
+        }
     }
 
     public void sendClientReply(ServerMessage<ClientReply> reply) {
         logger.info("Sending Client Reply to node {} : {}", reply.payload().getClientId(), reply);
         stubManager.getClientStub(0).reply(reply.payload());
     }
-
 }

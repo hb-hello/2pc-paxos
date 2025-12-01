@@ -1,5 +1,6 @@
 package org.example.messaging;
 
+import io.grpc.Server;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -29,10 +30,10 @@ public class PaxosMessageSender extends MessageSender {
         }
     }
 
-    public void broadcastNewView(NewViewMessage message, StreamObserver<AcceptedMessage> responseObserver) {
-        logger.info("Broadcasting new view message to all Paxos nodes: for ballot {} with count {}", new Ballot(message.getBallot()), message.getAcceptLogCount());
+    public void broadcastNewView(ServerMessage<NewViewMessage> message, StreamObserver<AcceptedMessage> responseObserver) {
+        logger.info("Broadcasting new view message to all Paxos nodes: {}", message);
         for (int serverId : Config.getServerIdsInClusterExcept(nodeId)) {
-            stubManager.getPaxosAsyncStub(serverId).newView(message, responseObserver);
+            stubManager.getPaxosAsyncStub(serverId).newView(message.payload(), responseObserver);
         }
     }
 
@@ -46,7 +47,7 @@ public class PaxosMessageSender extends MessageSender {
     public void broadcastCommit(ServerMessage<CommitMessage> message) {
         logger.info("Broadcasting commit message to all Paxos nodes: {}", message);
         for (int serverId : Config.getServerIdsInClusterExcept(nodeId)) {
-            stubManager.getPaxosAsyncStub(serverId).commit(message.payload(), null);
+            stubManager.getPaxosStub(serverId).commit(message.payload());
         }
     }
 }

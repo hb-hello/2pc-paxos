@@ -3,11 +3,12 @@ package org.example.tpc.handlers;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
-import org.example.consensus.LivenessTimer;
 import org.example.messaging.ServerMessage;
 import org.example.messaging.TPCMessageSender;
 import org.example.persistence.KeyValueStore;
 import org.example.tpc.*;
+
+import java.util.function.Consumer;
 
 public class ClientRequestHandler {
     private static final Logger logger = LogManager.getLogger(ClientRequestHandler.class);
@@ -18,8 +19,9 @@ public class ClientRequestHandler {
     private final StateMachineOperator operator;
     private final ClientRequestTracker clientRequestTracker;
     private final PaxosServer paxosServer;
-    private final LivenessTimer tpcTimer;
     private final TPCMessageSender messageSender;
+    private final Consumer<ServerMessage<ClientRequest>> sendPrepare;
+    private final TPCTimer tpcTimer;
 
     public ClientRequestHandler(int serverId,
                                 LockManager lockManager,
@@ -27,19 +29,22 @@ public class ClientRequestHandler {
                                 StateMachineOperator operator,
                                 ClientRequestTracker clientRequestTracker,
                                 PaxosServer paxosServer,
-                                LivenessTimer tpcTimer,
-                                TPCMessageSender messageSender) {
+                                TPCMessageSender messageSender,
+                                Consumer<ServerMessage<ClientRequest>> sendPrepare,
+                                TPCTimer tpcTimer) {
         this.serverId = serverId;
         this.lockManager = lockManager;
         this.database = database;
         this.operator = operator;
         this.clientRequestTracker = clientRequestTracker;
         this.paxosServer = paxosServer;
-        this.tpcTimer = tpcTimer;
         this.messageSender = messageSender;
+        this.sendPrepare = sendPrepare;
+        this.tpcTimer = tpcTimer;
     }
 
     public void handle(ServerMessage<ClientRequest> request) {
+
         if (clientRequestTracker.hasRequest(request)) {
             logger.info("Received duplicate client request {}. Checking for stored reply.", request.getMessageId());
             ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(request);
@@ -52,35 +57,37 @@ public class ClientRequestHandler {
             return;
         }
 
+        if (!request.payload().getIsReadOnly()) {
+            ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, request.payload().getOperation(), database);
+
+            int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), database);
+            clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
+
+            if (paxosServer.isLeader()) handleClientRequestAsLeader(request);
+            else paxosServer.handleClientRequestAsNonLeader(request);
+
+        } else executeReadOnlyAndReply(request);
+    }
+
+    public void handleClientRequestAsLeader(ServerMessage<ClientRequest> request) {
         ClientRequest clientRequest = request.payload();
+        ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, clientRequest.getOperation(), database);
 
-        if (!clientRequest.getIsReadOnly()) {
-            ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, clientRequest.getOperation(), database);
-            int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, clientRequest.getOperation(), database);
-            if (lockManager.acquireLockAndCheckBalance(clientRequest.getOperation(), executionMode, request.getMessageId(), database)) {
-
-                // do this regardless of role
-                clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
-                paxosServer.handleClientRequest(request);
-
-                if (paxosServer.isLeader()) {
-                    if (executionMode == ExecutionMode.BOTH) {
-                        paxosServer.triggerAccept(request, Phase.INTRA_SHARD);
-                        clientRequestTracker.markAccepted(request);
-                    } else {
-                        // send tpc prepare
-                        paxosServer.triggerAccept(request, Phase.PREPARE);
-                        clientRequestTracker.markAccepted(request);
-                    }
-                }
-
+        if (lockManager.acquireLockAndCheckBalance(clientRequest.getOperation(), executionMode, request.getMessageId(), database)) {
+            if (executionMode == ExecutionMode.BOTH) {
+                //Intra-Shard
+                paxosServer.triggerAccept(request, Phase.INTRA_SHARD);
+                clientRequestTracker.markAccepted(request);
+                clientRequestTracker.markIntraShard(request);
             } else {
-                logger.info("Failed to acquire locks or insufficient balance for request {}", request);
-                return;
+                //Cross-Shard
+                sendPrepare.accept(request);
+                paxosServer.triggerAccept(request, Phase.PREPARE);
+                clientRequestTracker.markAccepted(request);
             }
+        } else {
+            logger.info("Failed to acquire locks or insufficient balance for request {}", request);
         }
-
-        if (clientRequest.getIsReadOnly()) executeReadOnlyAndReply(request);
     }
 
     private void executeReadOnlyAndReply(ServerMessage<ClientRequest> request) {

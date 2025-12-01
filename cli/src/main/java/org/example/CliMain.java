@@ -183,7 +183,7 @@ public class CliMain {
         Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
 
         // Create a fresh ClientNode for this set
-        ClientNode clientNode = new ClientNode(0, cliMessageSender, accountToClusterIndex);
+        ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
         registerActiveClientNode(clientNode);
 
         resetAllServers();
@@ -227,7 +227,7 @@ public class CliMain {
 
         // Build a fresh ClientNode with current account→cluster mapping
         Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
-        ClientNode clientNode = new ClientNode(0, cliMessageSender, accountToClusterIndex);
+        ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
         registerActiveClientNode(clientNode);
 
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);

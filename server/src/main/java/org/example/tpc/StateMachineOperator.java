@@ -19,7 +19,6 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
-import java.util.function.Consumer;
 
 public class StateMachineOperator {
     private static final Logger logger = LogManager.getLogger(StateMachineOperator.class);
@@ -32,11 +31,11 @@ public class StateMachineOperator {
     private final ClientRequestTracker requestTracker;
     private final BiConsumer<ServerMessage<ClientRequest>, Phase> onExecuted;
 
-    // WAL: seqNum -> before-image of mutated accounts
-    private final ConcurrentMap<Long, WalEntry> wal = new ConcurrentHashMap<>();
+    // WAL: client request -> before-image of mutated accounts
+    private final ConcurrentMap<String, WalEntry> wal = new ConcurrentHashMap<>();
 
-    // Local committed flag per sequence number (2PC decision on this shard)
-    private final ConcurrentMap<Long, Boolean> committed = new ConcurrentHashMap<>();
+    // Local committed flag per client request (2PC decision on this shard)
+    private final ConcurrentMap<String, Boolean> committedOrAborted = new ConcurrentHashMap<>();
 
     // Next sequence number that should be executed (in-order guarantee)
     private final AtomicLong nextToExecute = new AtomicLong(1L);
@@ -58,23 +57,23 @@ public class StateMachineOperator {
     // Simple holder for WAL data
     private static final class WalEntry {
         private final Map<Integer, Double> beforeBalances;
-        private volatile boolean committed;
+        private volatile boolean committedOrAborted;
 
         private WalEntry(Map<Integer, Double> beforeBalances) {
             this.beforeBalances = beforeBalances;
-            this.committed = false;
+            this.committedOrAborted = false;
         }
 
         public Map<Integer, Double> beforeBalances() {
             return Collections.unmodifiableMap(beforeBalances);
         }
 
-        public boolean isCommitted() {
-            return committed;
+        public boolean isCommittedOrAborted() {
+            return committedOrAborted;
         }
 
-        public void markCommitted() {
-            this.committed = true;
+        public void markCommittedOrAborted() {
+            this.committedOrAborted = true;
         }
     }
 
@@ -110,36 +109,35 @@ public class StateMachineOperator {
                 return;
             }
 
-            // Skip if already marked committed/executed in our own bookkeeping
-            if (Boolean.TRUE.equals(committed.get(current))) {
-                nextToExecute.incrementAndGet();
-                continue;
-            }
-
-            OperationStatus status = operationLog.getStatus(current); // NONE/PREPARED/COMMITTED/EXECUTED/CHECKPOINTED
-            if (status != OperationStatus.COMMITTED && status != OperationStatus.EXECUTED) {
-                // Not ready to execute in log order yet.
-                return;
-            }
-
-            if (status == OperationStatus.EXECUTED) {
-                // Someone already ran this entry (e.g., after recovery); just advance.
-                committed.putIfAbsent(current, true);
-                nextToExecute.incrementAndGet();
-                continue;
-            }
-
-            // Status == COMMITTED: fetch request from operation log
             ServerMessage<ClientRequest> requestMessage = operationLog.getRequest(current);
             if (requestMessage == null) {
                 return;
             }
             ClientRequest request = requestMessage.payload();
+            String requestId = requestMessage.getMessageId();
+
+            // Skip if already marked committed/executed
+            if (Boolean.TRUE.equals(committedOrAborted.get(requestId))) {
+                nextToExecute.incrementAndGet();
+                continue;
+            }
+
+            OperationStatus status = operationLog.getStatus(current); // NONE/PREPARED/COMMITTED/EXECUTED/CHECKPOINTED
+            Phase phase = operationLog.getEntry(current).phase();
+            if (status != OperationStatus.COMMITTED && status != OperationStatus.EXECUTED && (phase == Phase.PREPARE || phase == Phase.INTRA_SHARD)) {
+                // Not ready to execute in log order yet.
+                return;
+            }
+
+            if (status == OperationStatus.EXECUTED) {
+                nextToExecute.incrementAndGet();
+                continue;
+            }
 
             // Build WAL before applying the operation
             WalEntry entry = buildWalEntry(request);
             if (entry != null) {
-                wal.put(current, entry);
+                wal.put(requestId, entry);
             }
 
             // Execute the operation on the state machine
@@ -159,14 +157,14 @@ public class StateMachineOperator {
             ServerMessage<ClientReply> replyMessage = new ServerMessage<>(reply);
             requestTracker.storeReply(requestMessage, replyMessage);
 
-            // Notify listener that the operation has been executed
-            onExecuted.accept(requestMessage, operationLog.getEntry(current).phase());
-
             // Mark as EXECUTED in the Paxos log atomically to ensure at-most-once
             operationLog.compareAndSetStatus(
                     current, OperationStatus.COMMITTED, OperationStatus.EXECUTED);
 
             nextToExecute.incrementAndGet();
+
+            // Notify listener that the operation has been executed
+            onExecuted.accept(requestMessage, operationLog.getEntry(current).phase());
         }
     }
 
@@ -210,28 +208,22 @@ public class StateMachineOperator {
      * Undo the effects of the given sequence number using its WAL before-image.
      * Intended for 2PC ABORT on this shard.
      */
-    public CompletableFuture<Void> undo(long seqNum) {
+    public CompletableFuture<Void> undo(String requestId) {
         CompletableFuture<Void> f = new CompletableFuture<>();
         stateMachineExecutor.execute(() -> {
             try {
-                WalEntry entry = wal.remove(seqNum);
-                if (entry != null && !entry.isCommitted()) {
+                WalEntry entry = wal.remove(requestId);
+                if (entry != null && !entry.isCommittedOrAborted()) {
                     for (Map.Entry<Integer, Double> e : entry.beforeBalances().entrySet()) {
                         int accountId = e.getKey();
                         double balance = e.getValue();
                         stateMachine.restoreBalance(accountId, balance);
                     }
                 }
-                ServerMessage<ClientRequest> requestMessage = operationLog.getRequest(seqNum);
-
-                if (requestMessage != null) {
-                    requestTracker.removeReply(requestMessage);
-                }
-
-                committed.remove(seqNum);
+                committedOrAborted.remove(requestId);
                 f.complete(null);
             } catch (Throwable t) {
-                logger.error("Error undoing seq {}", seqNum, t);
+                logger.error("Error undoing request: {}", requestId, t);
                 f.completeExceptionally(t);
             }
         });
@@ -242,18 +234,18 @@ public class StateMachineOperator {
      * Mark the given sequence as committed on this shard and flush its WAL entry.
      * After this call, the operation is durable in the main DB and cannot be undone.
      */
-    public CompletableFuture<Void> markCommitted(long seqNum) {
+    public CompletableFuture<Void> markCommittedOrAborted(String requestId) {
         CompletableFuture<Void> f = new CompletableFuture<>();
         stateMachineExecutor.execute(() -> {
             try {
-                committed.put(seqNum, true);
-                WalEntry entry = wal.remove(seqNum);
+                committedOrAborted.put(requestId, true);
+                WalEntry entry = wal.remove(requestId);
                 if (entry != null) {
-                    entry.markCommitted();
+                    entry.markCommittedOrAborted();
                 }
                 f.complete(null);
             } catch (Throwable t) {
-                logger.error("Error marking seq {} committed", seqNum, t);
+                logger.error("Error marking request committed or aborted : {}", requestId, t);
                 f.completeExceptionally(t);
             }
         });

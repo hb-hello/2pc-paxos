@@ -1,6 +1,5 @@
 package org.example.state;
 
-import com.google.protobuf.MapEntry;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
@@ -11,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 public class OperationLog {
     private static final Logger logger = LogManager.getLogger(OperationLog.class);
@@ -20,9 +20,11 @@ public class OperationLog {
     private final AtomicLong nextSeqNum;
     private final AtomicLong lastCheckpointSeqNum;
 
+    private final Consumer<ServerMessage<ClientRequest>> onNewClientRequest;
+
     //map of OperationLogEntry keyed by seqNum
 
-    public OperationLog() {
+    public OperationLog(Consumer<ServerMessage<ClientRequest>> onNewClientRequest) {
         this.STATUS_ORDER = new EnumMap<>(OperationStatus.class);
         STATUS_ORDER.put(OperationStatus.NONE, 0);
         STATUS_ORDER.put(OperationStatus.ACCEPTED, 1);
@@ -33,10 +35,16 @@ public class OperationLog {
         this.entries = new ConcurrentHashMap<>();
         this.nextSeqNum = new AtomicLong(1L);
         this.lastCheckpointSeqNum = new AtomicLong(0L);
+
+        this.onNewClientRequest = onNewClientRequest;
     }
 
     private int order(OperationStatus s) {
         return STATUS_ORDER.get(s);
+    }
+
+    public long getNextSeqNum() {
+        return nextSeqNum.get();
     }
 
     // Leader path: allocate new seqNum and insert a NONE/PREPARED entry
@@ -123,9 +131,11 @@ public class OperationLog {
                                           OperationStatus status,
                                           Phase phase) {
         AtomicBoolean updated = new AtomicBoolean(false);
+        AtomicBoolean newRequest = new AtomicBoolean(false);
         entries.compute(seqNum, (k, oldEntry) -> {
             if (oldEntry == null) {
                 updated.set(true);
+                newRequest.set(true);
                 return new OperationLogEntry(request, ballot, status, phase);
             }
 
@@ -137,7 +147,24 @@ public class OperationLog {
             updated.set(true);
             return new OperationLogEntry(request, ballot, status, phase);
         });
+
+        if (newRequest.get()) {
+            onNewClientRequest.accept(request);
+        }
+
         return updated.get();
+    }
+
+    public boolean hasRequestsWaitingToExecute() {
+        for (long seqNum : entries.keySet()) {
+            OperationStatus status = entries.get(seqNum).status();
+            if (status == OperationStatus.COMMITTED || status == OperationStatus.ACCEPTED || status == OperationStatus.NONE) {
+                logger.info("Waiting to execute : Found request at seqNum {} with status {}", seqNum, status);
+                return true;
+            }
+        }
+        logger.info("No requests waiting to execute");
+        return false;
     }
 
     public void markCheckpointed(long seqNum) {
