@@ -175,16 +175,14 @@ public class CliMain {
         System.out.printf("Processing set %d with %d transactions, live nodes: %s%n",
                 setNumber, set.transactions().size(), set.liveNodes());
 
-        // Live nodes in CSV are like "n1, n2, n3" or "[n1, n2, ...]"[attached_file:2]
-        List<Integer> activeServerIds = set.liveNodes();
-        activateServers(activeServerIds);
-
         // Fetch account→cluster mapping from DBHandler
         Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
 
         // Create a fresh ClientNode for this set
         ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
         registerActiveClientNode(clientNode);
+
+        dbHandler.resetDatabases();
 
         resetAllServers();
 
@@ -344,6 +342,20 @@ public class CliMain {
                     System.out.println("Processing transaction set #" + (nextSetNumber));
                     cli.processTransactionSet(nextSetNumber);
                     nextSetNumber++;
+                }
+                case "8" -> {
+                    System.out.print("Enter set #: ");
+                    try {
+                        int set = Integer.parseInt(sc.nextLine().trim());
+                        if (set <= 0 || set > cli.transactionSets.size()) {
+                            System.out.println("Set number must be positive and less than " + cli.transactionSets.size() + ".");
+                            break;
+                        }
+                        cli.processTransactionSet(set);
+                        nextSetNumber = set + 1;
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid set number.");
+                    }
                 }
                 case "9" -> {
                     System.out.print("Enter client ID: ");

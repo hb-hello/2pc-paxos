@@ -186,7 +186,7 @@ public class ClientNode {
         long deadlineMillis = Config.getClientTimeoutMillis();
 
         logger.debug("Sending request {} to leader {} of cluster {}",
-                ctx.request.getTimestamp(), leaderNodeId, ctx.clusterIndex);
+                ctx.key(), leaderNodeId, ctx.clusterIndex);
 
         messageSender.sendClientRequestWithDeadline(leaderNodeId, ctx.request, deadlineMillis);
 
@@ -227,7 +227,7 @@ public class ClientNode {
             latency = System.currentTimeMillis() - ctx.startTimeMillis;
             completedRequest = ctx.request;
             logger.info("Request {} completed via node {} in {} ms, result={}",
-                    ctx.request.getTimestamp(), nodeId, latency, reply.getResult());
+                    ctx.key(), nodeId, latency, reply.getResult());
         }
 
         ClientMetricsListener listener = metricsListener;
@@ -253,7 +253,7 @@ public class ClientNode {
         }
         if (ctx.broadcastRound >= MAX_BROADCAST_ROUNDS) {
             logger.warn("Request {} failed after {} broadcast rounds.",
-                    ctx.request.getTimestamp(), ctx.broadcastRound);
+                    ctx.key(), ctx.broadcastRound);
             ctx.completed = true;
             return;
         }
@@ -265,7 +265,7 @@ public class ClientNode {
         long deadlineMillis = Config.getClientTimeoutMillis();
 
         logger.info("Broadcast round {} for request {} to cluster {}",
-                ctx.broadcastRound, ctx.request.getTimestamp(), ctx.clusterIndex);
+                ctx.broadcastRound, ctx.key(), ctx.clusterIndex);
 
         // Copy request and release lock before sending
         ClientRequest request = ctx.request.toBuilder()
@@ -320,6 +320,10 @@ public class ClientNode {
             this.request = request;
             this.clusterIndex = clusterIndex;
             this.startTimeMillis = System.currentTimeMillis();
+        }
+
+        public String key() {
+            return request.getClientId() + ":" + request.getTimestamp();
         }
     }
 

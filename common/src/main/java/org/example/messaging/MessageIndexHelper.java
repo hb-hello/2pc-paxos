@@ -40,7 +40,7 @@ public final class MessageIndexHelper {
             messageIndex = pm.getBallot().getInstance() + ":" + pm.getBallot().getSenderId();
         }
         if (msg instanceof PromiseMessage pm) {
-            messageIndex = pm.getBallot().getInstance() + ":" + pm.getSenderId();
+            messageIndex = pm.getBallot().getInstance() + ":" + pm.getBallot().getSenderId();
         }
         if (msg instanceof NewViewMessage pm) {
             messageIndex = pm.getBallot().getInstance() + ":" + pm.getBallot().getSenderId();

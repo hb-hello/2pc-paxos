@@ -4,9 +4,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.LoggerContext;
 import org.example.config.Config;
-import org.example.messaging.CLIServiceServer;
-import org.example.messaging.MessageReceiver;
-import org.example.messaging.ServerActivityInterceptor;
+import org.example.messaging.*;
 import org.example.persistence.DatabaseManager;
 import org.example.persistence.KeyValueStore;
 import org.example.tpc.TPCServer;
@@ -16,6 +14,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Set;
 
 public class ServerMain {
@@ -28,6 +27,9 @@ public class ServerMain {
 
     private final MessageReceiver messageReceiver;
     private final CLIServiceServer cliServiceServer;
+    private final ClientService clientService;
+    private final TPCService tpcService;
+    private final PaxosService paxosService;
 
     private TPCServer server;
 
@@ -41,13 +43,20 @@ public class ServerMain {
         logger.info("Database connection established for Server {}", serverId);
         this.cliServiceServer = new CLIServiceServer(this);
         this.server = new TPCServer(serverId, cliServiceServer, executorManager, database);
-        this.messageReceiver = new MessageReceiver(serverId, Config.getNodePort(serverId), server.getServices(), new ServerActivityInterceptor());
+        this.clientService = new ClientService(server);
+        this.tpcService = new TPCService(server);
+        this.paxosService = new PaxosService(server.getPaxosServer());
+        this.messageReceiver = new MessageReceiver(serverId, Config.getNodePort(serverId),
+                List.of(clientService, tpcService, paxosService, cliServiceServer), new ServerActivityInterceptor());
     }
 
     @SuppressWarnings("unused")
     public void reset() {
         // potentially set a new serverId here if supporting re-configuration
         this.server = new TPCServer(serverId, cliServiceServer, executorManager, database);
+        this.clientService.reset(server);
+        this.tpcService.reset(server);
+        this.paxosService.reset(server.getPaxosServer());
         logger.info("Server {} state has been reset.", serverId);
     }
 

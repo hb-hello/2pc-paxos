@@ -8,6 +8,7 @@ import org.example.messaging.TPCMessageSender;
 import org.example.persistence.KeyValueStore;
 import org.example.tpc.*;
 
+import java.util.Map;
 import java.util.function.Consumer;
 
 public class ClientRequestHandler {
@@ -15,16 +16,17 @@ public class ClientRequestHandler {
 
     private final int serverId;
     private final LockManager lockManager;
+    private final Map<Integer, Integer> accountIdToClusterMap;
     private final KeyValueStore<Double> database;
     private final StateMachineOperator operator;
     private final ClientRequestTracker clientRequestTracker;
     private final PaxosServer paxosServer;
     private final TPCMessageSender messageSender;
     private final Consumer<ServerMessage<ClientRequest>> sendPrepare;
-    private final TPCTimer tpcTimer;
 
     public ClientRequestHandler(int serverId,
                                 LockManager lockManager,
+                                Map<Integer, Integer> accountIdToClusterMap,
                                 KeyValueStore<Double> database,
                                 StateMachineOperator operator,
                                 ClientRequestTracker clientRequestTracker,
@@ -34,18 +36,18 @@ public class ClientRequestHandler {
                                 TPCTimer tpcTimer) {
         this.serverId = serverId;
         this.lockManager = lockManager;
+        this.accountIdToClusterMap = accountIdToClusterMap;
         this.database = database;
         this.operator = operator;
         this.clientRequestTracker = clientRequestTracker;
         this.paxosServer = paxosServer;
         this.messageSender = messageSender;
         this.sendPrepare = sendPrepare;
-        this.tpcTimer = tpcTimer;
     }
 
     public void handle(ServerMessage<ClientRequest> request) {
 
-        if (clientRequestTracker.hasRequest(request)) {
+        if (clientRequestTracker.isAccepted(request)) {
             logger.info("Received duplicate client request {}. Checking for stored reply.", request.getMessageId());
             ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(request);
             if (replyMessage != null) {
@@ -58,22 +60,28 @@ public class ClientRequestHandler {
         }
 
         if (!request.payload().getIsReadOnly()) {
-            ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, request.payload().getOperation(), database);
-
-            int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), database);
-            clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
-
             if (paxosServer.isLeader()) handleClientRequestAsLeader(request);
-            else paxosServer.handleClientRequestAsNonLeader(request);
+            else {
+                ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, request.payload().getOperation(), accountIdToClusterMap);
+                int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
+                clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
+                logger.info("Added client request {} to tracker as non-leader with execution mode {} and otherClusterIndex {}", request.getMessageId(), executionMode.name(), otherClusterIndex);
+                paxosServer.handleClientRequestAsNonLeader(request);
+            }
 
         } else executeReadOnlyAndReply(request);
     }
 
     public void handleClientRequestAsLeader(ServerMessage<ClientRequest> request) {
         ClientRequest clientRequest = request.payload();
-        ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, clientRequest.getOperation(), database);
+        ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, clientRequest.getOperation(), accountIdToClusterMap);
 
         if (lockManager.acquireLockAndCheckBalance(clientRequest.getOperation(), executionMode, request.getMessageId(), database)) {
+
+            int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
+            clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
+            logger.info("Added client request {} to tracker as leader with execution mode {} and otherClusterIndex {}", request.getMessageId(), executionMode.name(), otherClusterIndex);
+
             if (executionMode == ExecutionMode.BOTH) {
                 //Intra-Shard
                 paxosServer.triggerAccept(request, Phase.INTRA_SHARD);
@@ -87,6 +95,7 @@ public class ClientRequestHandler {
             }
         } else {
             logger.info("Failed to acquire locks or insufficient balance for request {}", request);
+//            if (!clientRequestTracker.isAccepted(request)) clientRequestTracker.removeRequest(request);
         }
     }
 
@@ -94,7 +103,7 @@ public class ClientRequestHandler {
         try {
             ClientRequest clientRequest = request.payload();
             Operation resultOperation = clientRequest.getOperation();
-            ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, resultOperation, database);
+            ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, resultOperation, accountIdToClusterMap);
 
             OperationResult result = operator.executeReadOnly(resultOperation);
 

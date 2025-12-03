@@ -118,8 +118,8 @@ public class ClientRequestTracker {
     }
 
     public void addRequest(ServerMessage<ClientRequest> request, ExecutionMode mode, int otherClusterIndex) {
-        String id = key(request);
         Entry newEntry = new Entry(request, mode, otherClusterIndex);
+        String id = key(request);
         Entry existing = entries.putIfAbsent(id, newEntry);
         // Only mark as pending if this is the first time we see this id.
         if (existing == null) {
@@ -321,6 +321,12 @@ public class ClientRequestTracker {
         if (e != null) {
             e.setReply(null);
         }
+    }
+
+    public void removeRequest(ServerMessage<ClientRequest> request) {
+        String id = key(request);
+        entries.remove(id);
+        pendingIds.remove(id);
     }
 
 }

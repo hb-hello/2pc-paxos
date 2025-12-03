@@ -10,9 +10,13 @@ import org.example.tpc.TPCServer;
 public class TPCService extends TPCServiceGrpc.TPCServiceImplBase {
     private static final Logger logger = LogManager.getLogger(TPCService.class);
 
-    private final TPCServer server;
+    private TPCServer server;
 
     public TPCService(TPCServer server) {
+        this.server = server;
+    }
+
+    public synchronized void reset(TPCServer server) {
         this.server = server;
     }
 

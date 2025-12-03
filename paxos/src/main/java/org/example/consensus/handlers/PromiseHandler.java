@@ -29,7 +29,7 @@ public class PromiseHandler {
 
     public void handle(ServerMessage<PromiseMessage> promise) {
         logger.info("Received promise message {}", promise);
-        promiseTimer.restart();
+        promiseTimer.restart("receiving a promise");
 
         for (AcceptMessage msg : promise.payload().getAcceptLogList()) {
             state.acceptRequest(new ServerMessage<>(msg));

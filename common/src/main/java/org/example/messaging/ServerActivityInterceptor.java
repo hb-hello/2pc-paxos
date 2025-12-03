@@ -23,10 +23,10 @@ public class ServerActivityInterceptor implements ServerInterceptor {
             "org.example.CLIService/GetLog",
             "org.example.CLIService/GetNewViews",
             "org.example.CLIService/Reset",
-            "org.example.CLIService/Crash",
             "org.example.CLIService/Ping",
             "org.example.ClientService/Ping",
-            "org.example.PaxosService/Ping"
+            "org.example.PaxosService/Ping",
+            "org.example.TPCService/Ping"
     );
 
     public void setActiveFlag(boolean active) {

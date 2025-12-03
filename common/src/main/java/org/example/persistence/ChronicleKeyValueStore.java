@@ -8,6 +8,8 @@ import org.apache.logging.log4j.Logger;
 import java.io.File;
 import java.io.IOException;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
     private static final Logger logger = LogManager.getLogger(ChronicleKeyValueStore.class);
@@ -180,5 +182,11 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
         } catch (Exception e) {
             logger.error("Error deleting cluster id entry with key {} from Chronicle map: {}", key, e.getMessage());
         }
+    }
+
+    @Override
+    public Map<Integer, Integer> getAllClusterIds() {
+        return clusterIdMap.entrySet().stream()
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 }

@@ -33,7 +33,7 @@ public class PrepareHandler {
                     .build();
             responseObserver.onNext(promise);
             responseObserver.onCompleted();
-            promiseTimer.restart();
+            if (state.isCandidate()) promiseTimer.restart("sending a promise");
             logger.info("Sent Promise message: {}", new ServerMessage<>(promise));
         }
     }

@@ -15,17 +15,20 @@ public class AcceptHandler {
 
     private final PaxosState state;
     private final LivenessTimer clientRequestTimer;
+    private final LivenessTimer promiseTimer;
 
-    public AcceptHandler(PaxosState state, LivenessTimer clientRequestTimer) {
+    public AcceptHandler(PaxosState state, LivenessTimer clientRequestTimer, LivenessTimer promiseTimer) {
         this.state = state;
         this.clientRequestTimer = clientRequestTimer;
+        this.promiseTimer = promiseTimer;
     }
 
     public void handle(ServerMessage<AcceptMessage> accept, StreamObserver<AcceptedMessage> responseObserver) {
         Ballot acceptBallot = new Ballot(accept.payload().getBallot());
 
         if (state.checkBallotAndTransitionToBackup(acceptBallot) && state.acceptRequest(accept)) {
-            clientRequestTimer.startIfNotRunning();
+            promiseTimer.stop();
+            clientRequestTimer.startIfNotRunning("handling accept message " + accept);
             AcceptedMessage acceptedMessage = AcceptedMessage.newBuilder()
                     .setSequenceNumber(accept.payload().getSequenceNumber())
                     .setSenderId(state.getServerId())

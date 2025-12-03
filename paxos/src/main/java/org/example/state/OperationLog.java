@@ -135,6 +135,7 @@ public class OperationLog {
         entries.compute(seqNum, (k, oldEntry) -> {
             if (oldEntry == null) {
                 updated.set(true);
+                onNewClientRequest.accept(request);
                 newRequest.set(true);
                 return new OperationLogEntry(request, ballot, status, phase);
             }
@@ -144,12 +145,16 @@ public class OperationLog {
                 return oldEntry;
             }
 
+            if (order(status) <= order(oldEntry.status()) && phase == oldEntry.phase()) {
+                return oldEntry;
+            }
+
             updated.set(true);
             return new OperationLogEntry(request, ballot, status, phase);
         });
 
-        if (newRequest.get()) {
-            onNewClientRequest.accept(request);
+        if (updated.get()) {
+            nextSeqNum.accumulateAndGet(seqNum + 1, Math::max);
         }
 
         return updated.get();

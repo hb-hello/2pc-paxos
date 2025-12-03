@@ -5,6 +5,7 @@ import org.apache.logging.log4j.Logger;
 
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class LivenessTimer {
@@ -17,29 +18,38 @@ public class LivenessTimer {
     private final AtomicReference<ScheduledFuture<?>> scheduledFutureRef;
     private final AtomicBoolean isRunning;
     private final AtomicBoolean isExecutingCallback;
+    private final AtomicLong runGeneration;
 
     public LivenessTimer(long timeoutMillis, Runnable callback) {
         this.timeoutMillis = timeoutMillis;
         this.callback = callback;
-        this.scheduler = Executors.newScheduledThreadPool(1);
+        this.scheduler = Executors.newSingleThreadScheduledExecutor();
         this.callbackExecutor = Executors.newSingleThreadExecutor();  // Dedicated thread for callbacks
         this.scheduledFutureRef = new AtomicReference<>();
         this.isRunning = new AtomicBoolean(false);
         this.isExecutingCallback = new AtomicBoolean(false);
+        this.runGeneration = new AtomicLong(0L);
     }
 
-    private void start() {
+    private void start(String name) {
         try {
             isRunning.set(true);
+            final long runId = runGeneration.incrementAndGet();
             ScheduledFuture<?> future = scheduler.schedule(() -> {
                 // Timer has fired - no longer running
                 isRunning.set(false);
-
+                if (runGeneration.get() != runId) {
+                    logger.debug("Timer firing skipped for {} due to stale run {}", name, runId);
+                    return;
+                }
                 // Submit callback to separate executor
                 callbackExecutor.submit(() -> {
+                    if (runGeneration.get() != runId) {
+                        return;
+                    }
                     isExecutingCallback.set(true);
                     try {
-                        logger.info("Timer callback executing (isRunning=false)");
+                        logger.info("Timer callback executing (isRunning=false) for : {}", name);
                         callback.run();
                     } catch (Exception e) {
                         logger.error("Error in timer callback: {}", e.getMessage());
@@ -55,17 +65,15 @@ public class LivenessTimer {
         }
     }
 
-    public void startIfNotRunning() {
+    public void startIfNotRunning(String name) {
         if (!isRunning.get()) {
-            start();
+            start(name);
         }
     }
 
-    public void restart() {
-        if (!isExecutingCallback()) {
-            stop();
-            start();
-        }
+    public void restart(String name) {
+        stop();
+        start(name);
     }
 
     public synchronized void stop() {
@@ -76,6 +84,7 @@ public class LivenessTimer {
             scheduledFutureRef.set(null);
         }
         isRunning.set(false);
+        runGeneration.incrementAndGet();
     }
 
     public boolean isRunning() {

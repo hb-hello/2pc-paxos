@@ -7,6 +7,8 @@ import org.example.Transfer;
 import org.example.config.Config;
 import org.example.persistence.KeyValueStore;
 
+import java.util.Map;
+
 public final class OperationHelper {
     private static final Logger logger = LogManager.getLogger(OperationHelper.class);
 
@@ -15,13 +17,13 @@ public final class OperationHelper {
 
     public static ExecutionMode resolveExecutionMode(int serverId,
                                                      Operation operation,
-                                                     KeyValueStore<Double> database) {
+                                                     Map<Integer, Integer> database) {
         try {
             int localCluster = Config.getServerClusterIndex(serverId);
             if (operation.hasTransfer()) {
                 Transfer transfer = operation.getTransfer();
-                Integer senderCluster = database.getClusterId(transfer.getSender());
-                Integer receiverCluster = database.getClusterId(transfer.getReceiver());
+                Integer senderCluster = database.get(transfer.getSender());
+                Integer receiverCluster = database.get(transfer.getReceiver());
 
                 boolean senderLocal = senderCluster != null && senderCluster == localCluster;
                 boolean receiverLocal = receiverCluster != null && receiverCluster == localCluster;
@@ -47,14 +49,16 @@ public final class OperationHelper {
 
     public static int resolveOtherClusterIndex(int serverId,
                                                     Operation operation,
-                                                    KeyValueStore<Double> database) {
-        if (!operation.hasTransfer()) {
+                                                    Map<Integer, Integer> database) {
+        if (operation.getOpCase() != Operation.OpCase.TRANSFER) {
             return -1;
         }
         int localCluster = Config.getServerClusterIndex(serverId);
         Transfer transfer = operation.getTransfer();
-        Integer senderCluster = database.getClusterId(transfer.getSender());
-        Integer receiverCluster = database.getClusterId(transfer.getReceiver());
+        Integer senderCluster = database.get(transfer.getSender());
+//        logger.info("Sender {} is in cluster {}", transfer.getSender(), senderCluster);
+        Integer receiverCluster = database.get(transfer.getReceiver());
+//        logger.info("Receiver {} is in cluster {}", transfer.getReceiver(), receiverCluster);
 
         boolean senderLocal = senderCluster != null && senderCluster == localCluster;
         boolean receiverLocal = receiverCluster != null && receiverCluster == localCluster;

@@ -150,16 +150,16 @@ public class PaxosState {
 
     public void transitionToCandidate() {
         runSync(() -> {
-            if (!sentPrepare) {
-                role = Role.CANDIDATE;
-                ballot.incrementBallot(serverId);
-                logger.info("Server {} initiating leader election with ballot {}", serverId, ballot);
-            }
+            role = Role.CANDIDATE;
+            ballot.incrementBallot(serverId);
+            setSentPrepare(false);
+            logger.info("Server {} initiating leader election with ballot {}", serverId, ballot);
         });
     }
 
     public boolean checkBallotAndTransitionToLeader(Ballot newBallot) {
         return runSync(() -> {
+            if (isLeader()) return true;
             if (ballot.equals(newBallot)) {
                 role = Role.LEADER;
                 leaderId = serverId;
@@ -180,7 +180,7 @@ public class PaxosState {
 
     public boolean checkBallotAndTransitionToBackup(Ballot newBallot) {
         return runSync(() -> {
-            if (ballot.equals(newBallot)) return true;
+            if (isBackup()) return true;
             if (updateBallot(newBallot)) {
                 transitionToBackup();
                 return true;
@@ -206,7 +206,8 @@ public class PaxosState {
     }
 
     public long acceptRequest(ServerMessage<ClientRequest> request, Phase phase) {
-        return operationLog.addOperationWithStatus(request, ballot, OperationStatus.ACCEPTED, phase);
+        if (isLeader()) return operationLog.addOperationWithStatus(request, ballot, OperationStatus.ACCEPTED, phase);
+        else return -1L;
     }
 
     public boolean acceptRequestWithSeqNum(ServerMessage<ClientRequest> request, Phase phase, long seqNum) {

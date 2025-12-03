@@ -15,6 +15,7 @@ import org.example.tpc.handlers.ClientRequestHandler;
 import org.example.tpc.handlers.PreparedHandler;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -23,6 +24,7 @@ public class TPCServer implements TPCHooks {
 
     private final int serverId;
     private final ConcurrentHashMap<Integer, Integer> leaderMap;
+    private final Map<Integer, Integer> accountIdToClusterMap;
 
     private final ExecutorManager executorManager;
 
@@ -52,6 +54,7 @@ public class TPCServer implements TPCHooks {
         this.executorManager = executorManager;
         this.lockManager = new LockManager();
         this.database = database;
+        this.accountIdToClusterMap = database.getAllClusterIds();
         this.clientRequestTracker = new ClientRequestTracker();
         this.tpcTimer = new TPCTimer(Config.getServerTimeoutMillis() * 3L, executorManager.getTimerExecutor(), this::tpcTimerCallback);
 
@@ -73,6 +76,7 @@ public class TPCServer implements TPCHooks {
         this.clientRequestHandler = new ClientRequestHandler(
                 serverId,
                 lockManager,
+                accountIdToClusterMap,
                 database,
                 operator,
                 clientRequestTracker,
@@ -86,6 +90,10 @@ public class TPCServer implements TPCHooks {
 
     public List<BindableService> getServices() {
         return List.of(paxosServer.getPaxosService(), cliServiceServer, clientService);
+    }
+
+    public PaxosServer getPaxosServer() {
+        return paxosServer;
     }
 
     public void warmup() {
@@ -136,12 +144,15 @@ public class TPCServer implements TPCHooks {
     private void releaseLocksAndSendReply(String requestId, Phase phase) {
         if (phase == Phase.INTRA_SHARD || (phase == Phase.COMMIT && clientRequestTracker.isCommitted(requestId))) {
             releaseLocks(requestId);
+            clientRequestTracker.markCommitted(requestId);
             paxosServer.refreshTimerOnExecute();
-            ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(requestId);
-            if (replyMessage != null) {
-                messageSender.sendClientReply(replyMessage);
-            } else {
-                logger.error("No reply found for committed request {}", requestId);
+            if (paxosServer.isLeader()) {
+                ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(requestId);
+                if (replyMessage != null) {
+                    messageSender.sendClientReply(replyMessage);
+                } else {
+                    logger.error("No reply found for committed request {}", requestId);
+                }
             }
         }
     }
@@ -165,7 +176,6 @@ public class TPCServer implements TPCHooks {
     }
 
     private void markCommittedAndSend(String requestId) {
-        clientRequestTracker.markCommitted(requestId);
         releaseLocksAndSendReply(requestId, Phase.COMMIT);
 
         int otherClusterIndex = clientRequestTracker.getOtherClusterIndex(requestId);
@@ -226,8 +236,8 @@ public class TPCServer implements TPCHooks {
 
     @Override
     public void onNewClientRequest(ServerMessage<ClientRequest> request) {
-        ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, request.payload().getOperation(), database);
-        int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), database);
+        ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, request.payload().getOperation(), accountIdToClusterMap);
+        int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
         logger.info("New client request {} with execution mode {} and other cluster index {} being added to tracker.", request.getMessageId(), executionMode, otherClusterIndex);
         clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
         clientRequestTracker.markAccepted(request);

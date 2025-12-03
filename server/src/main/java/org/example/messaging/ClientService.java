@@ -11,9 +11,13 @@ import org.example.tpc.TPCServer;
 public class ClientService extends ClientServiceGrpc.ClientServiceImplBase {
     private static final Logger logger = LogManager.getLogger(ClientService.class);
 
-    private final TPCServer server;
+    private TPCServer server;
 
     public ClientService(TPCServer server) {
+        this.server = server;
+    }
+
+    public synchronized void reset(TPCServer server) {
         this.server = server;
     }
 

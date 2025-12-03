@@ -69,13 +69,15 @@ public class DBHandler {
                 accountIdToClusterIndex.put(accountId, clusterIndex);
 
                 // insert the account into every node's KeyValueStore in this cluster
-                Map<Integer, KeyValueStore<Double>> clusterDbs = databases.get(clusterIndex);
-                if (clusterDbs == null || clusterDbs.isEmpty()) {
-                    throw new RuntimeException("No databases configured for cluster " + clusterIndex);
-                }
-                for (KeyValueStore<Double> database : clusterDbs.values()) {
-                    database.put(accountId, 10.0);
-                    database.putClusterId(accountId, clusterIndex);
+                for (int i = 0; i < clusterCount; i++) {
+                    Map<Integer, KeyValueStore<Double>> clusterDbs = databases.get(i);
+                    if (clusterDbs == null || clusterDbs.isEmpty()) {
+                        throw new RuntimeException("No databases configured for cluster " + clusterIndex);
+                    }
+                    for (KeyValueStore<Double> database : clusterDbs.values()) {
+                        if (i == clusterIndex) database.put(accountId, 10.0);
+                        database.putClusterId(accountId, clusterIndex);
+                    }
                 }
             }
             logger.info("Database initialization complete.");
@@ -151,6 +153,21 @@ public class DBHandler {
             });
         }
         return tasks;
+    }
+
+    private void updateClusterMetadataForAccount(int accountId, int clusterIndex) {
+        for (Map<Integer, KeyValueStore<Double>> clusterDbs : databases.values()) {
+            if (clusterDbs == null || clusterDbs.isEmpty()) {
+                continue;
+            }
+            for (KeyValueStore<Double> db : clusterDbs.values()) {
+                try {
+                    db.putClusterId(accountId, clusterIndex);
+                } catch (Exception ex) {
+                    logger.warn("Failed to update cluster metadata for account {}: {}", accountId, ex.getMessage());
+                }
+            }
+        }
     }
 
     /**
@@ -251,6 +268,8 @@ public class DBHandler {
             } else {
                 throw new RuntimeException("Target cluster " + targetClusterIndex + " not configured.");
             }
+
+            updateClusterMetadataForAccount(accountId, targetClusterIndex);
 
             // Update mapping
             accountIdToClusterIndex.put(accountId, targetClusterIndex);

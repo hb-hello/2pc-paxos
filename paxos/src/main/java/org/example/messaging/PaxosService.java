@@ -10,9 +10,13 @@ import org.example.state.Ballot;
 public class PaxosService extends PaxosServiceGrpc.PaxosServiceImplBase {
     private static final Logger logger = LogManager.getLogger(PaxosService.class);
 
-    private final PaxosServer server;
+    private PaxosServer server;
 
     public PaxosService(PaxosServer server) {
+        this.server = server;
+    }
+
+    public synchronized void reset(PaxosServer server) {
         this.server = server;
     }
 

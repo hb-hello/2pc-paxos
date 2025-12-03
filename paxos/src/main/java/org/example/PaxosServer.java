@@ -42,7 +42,7 @@ public class PaxosServer {
 
     public PaxosServer(int serverId, ExecutorManager executorManager, TPCHooks tpcHooks) {
         this.executorManager = executorManager;
-        this.promiseTimer = new LivenessTimer(getRandom(Config.getServerTimeoutMillis() / 3), this::promiseTimerCallback);
+        this.promiseTimer = new LivenessTimer(getRandom(Config.getServerTimeoutMillis() / 2), this::promiseTimerCallback);
         this.clientRequestTimer = new LivenessTimer(Config.getServerTimeoutMillis(), this::clientRequestTimerCallback);
 
         this.state = new PaxosState(serverId, executorManager.getStateExecutor(), this::onNewClientRequest);
@@ -51,11 +51,11 @@ public class PaxosServer {
         this.paxosService = new PaxosService(this);
         this.messageSender = new PaxosMessageSender(serverId, executorManager.getNetworkExecutor());
 
-        this.clientRequestHandler = new ClientRequestHandler(state, messageSender);
+        this.clientRequestHandler = new ClientRequestHandler(state, messageSender, executorManager);
         this.prepareHandler = new PrepareHandler(state, promiseTimer);
         this.promiseHandler = new PromiseHandler(state, promiseTimer, this::triggerNewView);
         this.newViewHandler = new NewViewHandler(state, promiseTimer);
-        this.acceptHandler = new AcceptHandler(state, clientRequestTimer);
+        this.acceptHandler = new AcceptHandler(state, clientRequestTimer, promiseTimer);
         this.acceptedHandler = new AcceptedHandler(state, this::triggerCommit);
         this.commitHandler = new CommitHandler(state, this::triggerCommit);
 
@@ -115,7 +115,7 @@ public class PaxosServer {
     public void handleClientRequestAsNonLeader(ServerMessage<ClientRequest> request) {
         // already called from within message processing thread
         clientRequestHandler.handle(request, this::initiateLeaderElection);
-        clientRequestTimer.startIfNotRunning();
+        if (!state.isCandidate()) clientRequestTimer.startIfNotRunning("handling client request as non-leader : " + request.getMessageId());
     }
 
     public void handlePrepare(ServerMessage<PrepareMessage> prepareMessage, StreamObserver<PromiseMessage> responseObserver) {
@@ -141,13 +141,17 @@ public class PaxosServer {
     public void initiateLeaderElection() {
         if (!leaderElectionInProgress.get()) {
             leaderElectionInProgress.set(true);
+            clientRequestTimer.stop();
             state.runSync(() -> {
                 state.transitionToCandidate();
                 Ballot ballot = state.getBallot().toProto();
                 PrepareMessage prepareMessage = PrepareMessage.newBuilder()
                         .setBallot(ballot)
                         .build();
-                messageSender.broadcastPrepare(new ServerMessage<>(prepareMessage), promiseHandler.handler());
+                executorManager.submitMessageProcessing(() -> {
+                    messageSender.broadcastPrepare(new ServerMessage<>(prepareMessage), promiseHandler.handler());
+                    promiseTimer.restart("initiating leader election for ballot: " + state.getBallot());
+                });
                 state.setSentPrepare(true);
             });
         }
@@ -166,7 +170,8 @@ public class PaxosServer {
 
     public void triggerAccept(ServerMessage<ClientRequest> request, Phase phase) {
         long seqNum = state.acceptRequest(request, phase);
-        clientRequestTimer.startIfNotRunning();
+        if (seqNum == -1L) return; // not leader anymore
+        clientRequestTimer.startIfNotRunning("handling client request to trigger accept : " + request.getMessageId());
         if (state.isLeader()) {
             AcceptMessage acceptMessage = AcceptMessage.newBuilder()
                     .setSequenceNumber(seqNum)
@@ -180,7 +185,8 @@ public class PaxosServer {
 
     public void triggerAccept(ServerMessage<ClientRequest> request, Phase phase, long seqNum) {
         state.acceptRequestWithSeqNum(request, phase, seqNum);
-        clientRequestTimer.startIfNotRunning();
+        promiseTimer.stop();
+        clientRequestTimer.startIfNotRunning("handling client request to trigger accept for commit phase : " + request.getMessageId());
         if (state.isLeader()) {
             AcceptMessage acceptMessage = AcceptMessage.newBuilder()
                     .setSequenceNumber(seqNum)
@@ -206,6 +212,7 @@ public class PaxosServer {
 
     public void triggerCommit(ServerMessage<CommitMessage> commitMessage) {
         if (state.commitRequest(commitMessage)) {
+            promiseTimer.stop();
             tpcHooks.onPaxosCommit(commitMessage);
             if (state.isLeader()) messageSender.broadcastCommit(commitMessage);
         }
@@ -214,7 +221,7 @@ public class PaxosServer {
     public void refreshTimerOnExecute() {
         if (state.hasRequestsWaitingToExecute()) {
             logger.info("Pending client requests detected; restarting client request timer.");
-            clientRequestTimer.restart();
+            clientRequestTimer.restart("refreshing timer on execute");
         } else {
             logger.info("No pending client requests to execute; stopping client request timer.");
             clientRequestTimer.stop();
@@ -225,6 +232,7 @@ public class PaxosServer {
         state.runSync(() -> {
             if (state.isCandidate()) {
                 logger.info("Promise timer expired while in CANDIDATE role. Re-initiating leader election.");
+                leaderElectionInProgress.set(false);
                 initiateLeaderElection();
             }
         });

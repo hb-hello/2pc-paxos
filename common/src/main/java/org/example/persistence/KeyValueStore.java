@@ -13,4 +13,5 @@ public interface KeyValueStore<T> {
     void putClusterId(int key, int clusterId);
     Integer getClusterId(int key);
     void deleteClusterId(int key);
+    Map<Integer, Integer> getAllClusterIds();
 }

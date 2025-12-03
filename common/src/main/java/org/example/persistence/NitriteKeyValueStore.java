@@ -131,6 +131,11 @@ public class NitriteKeyValueStore<T> implements KeyValueStore<T> {
     }
 
     @Override
+    public Map<Integer, Integer> getAllClusterIds() {
+        return clusterIdMap;
+    }
+
+    @Override
     public void deleteClusterId(int key) {
         clusterIdMap.remove(key);
     }
