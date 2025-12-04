@@ -47,7 +47,6 @@ public class AcceptedHandler {
 
             @Override
             public void onCompleted() {
-//                logger.info("Completed receiving PromiseMessages");
             }
         };
     }

@@ -120,4 +120,58 @@ public class ClientBenchmark implements ClientMetricsListener {
         Collections.shuffle(txs, rnd);
         return txs;
     }
+
+    /**
+     * Build intra-shard transfers where no sender repeats, up to database size.
+     */
+    public static List<String> buildNonContentiousIntraShardTransfers(Map<Integer, Integer> accountToClusterIndex,
+                                                                      int totalRequests) {
+        int clusterCount = Config.getServerClusterCount();
+        if (totalRequests % clusterCount != 0) {
+            throw new IllegalArgumentException("totalRequests must be divisible by clusterCount");
+        }
+        int databaseSize = Config.getDatabaseSize();
+        if (totalRequests > databaseSize) {
+            throw new IllegalArgumentException("totalRequests cannot exceed database size " + databaseSize);
+        }
+
+        Map<Integer, List<Integer>> accountsByCluster = new HashMap<>();
+        for (Map.Entry<Integer, Integer> e : accountToClusterIndex.entrySet()) {
+            accountsByCluster
+                    .computeIfAbsent(e.getValue(), k -> new ArrayList<>())
+                    .add(e.getKey());
+        }
+
+        int perCluster = totalRequests / clusterCount;
+        ThreadLocalRandom rnd = ThreadLocalRandom.current();
+        List<String> txs = new ArrayList<>(totalRequests);
+
+        for (int clusterIdx = 0; clusterIdx < clusterCount; clusterIdx++) {
+            List<Integer> accounts = accountsByCluster.get(clusterIdx);
+            if (accounts == null || accounts.size() < 2) {
+                throw new IllegalStateException("Not enough accounts in cluster " + clusterIdx);
+            }
+            if (perCluster > accounts.size()) {
+                throw new IllegalStateException("Cluster " + clusterIdx + " does not have enough unique senders");
+            }
+
+            List<Integer> shuffledSenders = new ArrayList<>(accounts);
+            Collections.shuffle(shuffledSenders, rnd);
+
+            for (int i = 0; i < perCluster; i++) {
+                int sender = shuffledSenders.get(i);
+                int receiver;
+                do {
+                    receiver = accounts.get(rnd.nextInt(accounts.size()));
+                } while (receiver == sender);
+
+                double amount = rnd.nextDouble(1.0, 10.0);
+                String tx = sender + "," + receiver + "," + String.format(Locale.US, "%.2f", amount);
+                txs.add(tx);
+            }
+        }
+
+        Collections.shuffle(txs, rnd);
+        return txs;
+    }
 }

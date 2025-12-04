@@ -135,7 +135,7 @@ public class StateMachineOperator {
             }
 
             // Build WAL before applying the operation
-            WalEntry entry = buildWalEntry(request);
+            WalEntry entry = buildWalEntry(request, mode);
             if (entry != null) {
                 wal.put(requestId, entry);
             }
@@ -172,20 +172,25 @@ public class StateMachineOperator {
      * For non-read-only operations, capture the pre-operation balances of all
      * accounts that may be mutated, as a before-image.
      */
-    private WalEntry buildWalEntry(ClientRequest request) {
+    private WalEntry buildWalEntry(ClientRequest request, ExecutionMode mode) {
         Operation op = request.getOperation();
         switch (op.getOpCase()) {
             case TRANSFER -> {
                 int sender = op.getTransfer().getSender();
                 int receiver = op.getTransfer().getReceiver();
                 Map<Integer, Double> before = new HashMap<>(2);
-                // BankStateMachine itself reads balances from the KeyValueStore<Double>.
-                before.put(sender, stateMachineBalance(sender));
-                before.put(receiver, stateMachineBalance(receiver));
+                if (mode == ExecutionMode.BOTH || mode == ExecutionMode.SENDER) {
+                    before.put(sender, stateMachineBalance(sender));
+                }
+                if (mode == ExecutionMode.BOTH || mode == ExecutionMode.RECEIVER) {
+                    before.put(receiver, stateMachineBalance(receiver));
+                }
+                if (before.isEmpty()) {
+                    return null;
+                }
                 return new WalEntry(before);
             }
             case BALANCE_REQUEST -> {
-                // Pure read; no WAL needed.
                 return null;
             }
             case OP_NOT_SET -> throw new IllegalArgumentException("Operation.op not set");

@@ -242,4 +242,10 @@ public class PaxosServer {
         logger.info("Client request timer expired. Initiating leader election.");
         initiateLeaderElection();
     }
+
+    public void reset() {
+        promiseTimer.stop();
+        clientRequestTimer.stop();
+        leaderElectionInProgress.set(false);
+    }
 }

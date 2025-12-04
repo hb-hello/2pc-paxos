@@ -220,7 +220,7 @@ public class CliMain {
 
     private void runBenchmark(int totalRequests) {
         // Make sure servers are reset and active
-//        resetAllServers();
+        resetAllServers();
         activateAllServers();
 
         // Build a fresh ClientNode with current account→cluster mapping
@@ -232,7 +232,7 @@ public class CliMain {
         clientNode.setMetricsListener(benchmark);
 
         // Build 6000 intra-shard transfers evenly across shards
-        List<String> txs = ClientBenchmark.buildIntraShardTransfers(accountToClusterIndex, totalRequests);
+        List<String> txs = ClientBenchmark.buildNonContentiousIntraShardTransfers(accountToClusterIndex, totalRequests);
 
         System.out.printf("Starting benchmark: %d intra-shard transfers%n", totalRequests);
 
@@ -363,7 +363,7 @@ public class CliMain {
                     cli.printDBForAccountId(idStr);
                 }
                 case "10" -> {
-                    cli.runBenchmark(6000);
+                    cli.runBenchmark(150);
                 }
                 case "0" -> {
                     System.out.println("Exiting...");

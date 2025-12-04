@@ -53,6 +53,7 @@ public class ServerMain {
     @SuppressWarnings("unused")
     public void reset() {
         // potentially set a new serverId here if supporting re-configuration
+        server.reset();
         this.server = new TPCServer(serverId, cliServiceServer, executorManager, database);
         this.clientService.reset(server);
         this.tpcService.reset(server);

@@ -23,7 +23,7 @@ public class ClientRequestHandler {
     }
 
     public void handle(ServerMessage<ClientRequest> request, Runnable leaderInitiationCallback) {
-        logger.info("Handling client request: {}", request.getMessageId());
+//        logger.info("Handling client request: {}", request.getMessageId());
 
         state.runSync(() -> {
             if (state.isBackup()) {

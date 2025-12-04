@@ -287,4 +287,11 @@ public class TPCServer implements TPCHooks {
         retryManager.shutdown();
         lockManager.releaseAllLocks();
     }
+
+    public void reset() {
+        lockManager.releaseAllLocks();
+        tpcTimer.shutdown();
+        retryManager.shutdown();
+        paxosServer.reset();
+    }
 }

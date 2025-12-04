@@ -9,6 +9,7 @@ import org.example.config.Config;
 import org.example.state.Ballot;
 
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class PaxosMessageSender extends MessageSender {
 
@@ -40,7 +41,7 @@ public class PaxosMessageSender extends MessageSender {
     public void broadcastAccept(ServerMessage<AcceptMessage> message, StreamObserver<AcceptedMessage> responseObserver) {
         logger.info("Broadcasting accept message to all Paxos nodes: {}", message);
         for (int serverId : Config.getServerIdsInClusterExcept(nodeId)) {
-            stubManager.getPaxosAsyncStub(serverId).accept(message.payload(), responseObserver);
+            stubManager.getPaxosAsyncStub(serverId).withDeadlineAfter(50, TimeUnit.MILLISECONDS).accept(message.payload(), responseObserver);
         }
     }
 

@@ -78,9 +78,11 @@ public class ClientRequestHandler {
 
         if (lockManager.acquireLockAndCheckBalance(clientRequest.getOperation(), executionMode, request.getMessageId(), database)) {
 
-            int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
-            clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
-            logger.info("Added client request {} to tracker as leader with execution mode {} and otherClusterIndex {}", request.getMessageId(), executionMode.name(), otherClusterIndex);
+            if (!clientRequestTracker.hasRequest(request)) {
+                int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
+                clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
+                logger.info("Added client request {} to tracker as leader with execution mode {} and otherClusterIndex {}", request.getMessageId(), executionMode.name(), otherClusterIndex);
+            }
 
             if (executionMode == ExecutionMode.BOTH) {
                 //Intra-Shard
