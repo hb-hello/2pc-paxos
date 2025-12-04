@@ -7,6 +7,12 @@
     <File name="ServerFile" fileName="${sys:logPath:-logs/server-default.log}" append="true" createOnDemand="true">
       <PatternLayout pattern="%d{ISO8601} [%t] %-5level %logger{20} - %msg%n"/>
     </File>
+      <File name="PaxosMetricsFile"
+            fileName="${sys:metricsLogPath:-logs/paxos-metrics-default.log}"
+            append="true"
+            createOnDemand="true">
+          <PatternLayout pattern="%d{ISO8601} %msg%n"/>
+      </File>
   </Appenders>
 
   <Loggers>
@@ -14,6 +20,9 @@
     <Logger name="org.example" level="info" additivity="false">
       <AppenderRef ref="ServerFile" />
     </Logger>
+      <Logger name="PaxosMetricsLogger" level="info" additivity="false">
+          <AppenderRef ref="PaxosMetricsFile" />
+      </Logger>
     <!-- Route everything to the file appender and disable console logging -->
     <Root level="info">
       <AppenderRef ref="ServerFile" />

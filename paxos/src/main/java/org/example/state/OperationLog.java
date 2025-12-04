@@ -4,6 +4,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
 import org.example.messaging.ServerMessage;
+import org.example.metrics.MetricsListener;
 
 import java.util.EnumMap;
 import java.util.concurrent.ConcurrentHashMap;
@@ -22,9 +23,9 @@ public class OperationLog {
 
     private final Consumer<ServerMessage<ClientRequest>> onNewClientRequest;
 
-    //map of OperationLogEntry keyed by seqNum
+    private final MetricsListener metricsListener;
 
-    public OperationLog(Consumer<ServerMessage<ClientRequest>> onNewClientRequest) {
+    public OperationLog(Consumer<ServerMessage<ClientRequest>> onNewClientRequest, MetricsListener metricsListener) {
         this.STATUS_ORDER = new EnumMap<>(OperationStatus.class);
         STATUS_ORDER.put(OperationStatus.NONE, 0);
         STATUS_ORDER.put(OperationStatus.ACCEPTED, 1);
@@ -37,6 +38,8 @@ public class OperationLog {
         this.lastCheckpointSeqNum = new AtomicLong(0L);
 
         this.onNewClientRequest = onNewClientRequest;
+
+        this.metricsListener = metricsListener;
     }
 
     private int order(OperationStatus s) {
@@ -47,7 +50,6 @@ public class OperationLog {
         return nextSeqNum.get();
     }
 
-    // Leader path: allocate new seqNum and insert a NONE/PREPARED entry
     public long addOperation(ServerMessage<ClientRequest> request, Ballot ballot) {
         return addOperationWithStatus(request, ballot, OperationStatus.NONE, Phase.PREPARE);
     }
@@ -62,11 +64,13 @@ public class OperationLog {
                 phase
         );
 
+        long now = System.nanoTime();
         OperationLogEntry prev = entries.putIfAbsent(seq, entry);
         if (prev != null) {
             // Should not happen if seq numbers are strictly monotonic
             logger.warn("Seq {} already present when adding operation: {}", seq, prev);
         }
+        metricsListener.onStatusTransition(seq, OperationStatus.NONE, status, now);
         return seq;
     }
 
@@ -122,7 +126,13 @@ public class OperationLog {
             );
         });
 
-        return result != null && result.status() == newStatus;
+        if (result != null && result.status() == newStatus) {
+            long now = System.nanoTime();
+            metricsListener.onStatusTransition(seqNum, expected, newStatus, now);
+            return true;
+        }
+
+        return false;
     }
 
     public boolean setOperationWithStatus(long seqNum,
@@ -150,6 +160,8 @@ public class OperationLog {
             }
 
             updated.set(true);
+            long now = System.nanoTime();
+            metricsListener.onStatusTransition(seqNum, oldEntry.status(), status, now);
             return new OperationLogEntry(request, ballot, status, phase);
         });
 

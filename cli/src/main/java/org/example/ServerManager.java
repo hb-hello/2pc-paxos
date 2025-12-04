@@ -1,6 +1,9 @@
 package org.example;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -8,8 +11,17 @@ public class ServerManager {
     private static final List<Process> processes = new ArrayList<>();
 
     public static void startAllServers(String jarPath, int numServers) throws IOException {
+        Path jar = Paths.get(jarPath);
+        if (!jar.isAbsolute()) {
+            jar = Paths.get(System.getProperty("user.dir")).resolve(jar).normalize();
+        }
+        if (Files.notExists(jar)) {
+            throw new IOException("Server executable jar not found: " + jar);
+        }
+
+        System.out.println("Launching servers using jar: " + jar);
+
         for (int i = 1; i <= numServers; i++) {
-            // Include the protobuf JVM compatibility flag and the add-opens options when launching child JVMs
             ProcessBuilder pb = new ProcessBuilder(
                     "java",
                     "-Dcom.google.protobuf.use_unsafe_pre22_gencode=true",
@@ -24,12 +36,14 @@ public class ServerManager {
                     "--add-opens=java.base/java.io=ALL-UNNAMED",
                     "--add-opens=java.base/java.util=ALL-UNNAMED",
                     "-jar",
-                    jarPath,
+                    jar.toString(),
                     String.valueOf(i)
             );
-//            pb.inheritIO();
+            //            pb.inheritIO();
             pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
             pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+
+//            System.out.println("Command: " + String.join(" ", pb.command()));
             Process process = pb.start();
             processes.add(process);
             System.out.println("Started server " + i);

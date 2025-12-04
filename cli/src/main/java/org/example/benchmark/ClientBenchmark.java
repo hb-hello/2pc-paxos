@@ -12,7 +12,6 @@ import java.util.concurrent.ThreadLocalRandom;
 
 public class ClientBenchmark implements ClientMetricsListener {
 
-    private final int totalRequests;
     private final CountDownLatch latch;
 
     private final LongAdder completed = new LongAdder();
@@ -24,7 +23,6 @@ public class ClientBenchmark implements ClientMetricsListener {
     private volatile long endTimeNanos;
 
     public ClientBenchmark(int totalRequests) {
-        this.totalRequests = totalRequests;
         this.latch = new CountDownLatch(totalRequests);
     }
 

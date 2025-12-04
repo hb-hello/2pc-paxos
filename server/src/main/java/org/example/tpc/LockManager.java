@@ -104,9 +104,11 @@ public class LockManager {
             return false;
         }
 
+        if (mode == ExecutionMode.BOTH) return true; // No balance check needed for intra-shard transfers
+
         // Step 2: only the shard responsible for debiting the sender checks funds
         if (operation.getOpCase() == Operation.OpCase.TRANSFER &&
-                (mode == ExecutionMode.BOTH || mode == ExecutionMode.SENDER)) {
+                mode == ExecutionMode.SENDER) {
 
             int senderId = operation.getTransfer().getSender();
             double amount = operation.getTransfer().getAmount();

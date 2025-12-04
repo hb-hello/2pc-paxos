@@ -257,6 +257,9 @@ public class TPCServer implements TPCHooks {
                     releaseLocks(request.getMessageId()); //shouldn't be needed but just in case
                     markAbortedAndSend(request);
                 }
+                case COMMIT, INTRA_SHARD -> {
+                    //nothing to do here
+                }
                 default -> logger.error("Unknown phase {} in accept message during new view handling", phase);
             }
         }
@@ -289,9 +292,9 @@ public class TPCServer implements TPCHooks {
     }
 
     public void reset() {
+        paxosServer.reset();
         lockManager.releaseAllLocks();
         tpcTimer.shutdown();
         retryManager.shutdown();
-        paxosServer.reset();
     }
 }

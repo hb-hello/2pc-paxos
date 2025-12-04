@@ -40,7 +40,7 @@ public class AcceptHandler {
             logger.info("Sent accepted message : {}", acceptedMessage);
         } else {
             logger.info("Accept request rejected for ballot number: {}", acceptBallot);
-            responseObserver.onCompleted();
+//            responseObserver.onCompleted();
         }
     }
 }

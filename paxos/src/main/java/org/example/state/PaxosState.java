@@ -5,6 +5,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
 import org.example.messaging.ServerMessage;
+import org.example.metrics.MetricsListener;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
@@ -27,13 +28,13 @@ public class PaxosState {
 
     private boolean sentPrepare = false;
 
-    public PaxosState(int serverId, ExecutorService stateExec, Consumer<ServerMessage<ClientRequest>> onNewClientRequest) {
+    public PaxosState(int serverId, ExecutorService stateExec, Consumer<ServerMessage<ClientRequest>> onNewClientRequest, MetricsListener metricsListener) {
         this.serverId = serverId;
         this.stateExec = stateExec;
         this.ballot = new Ballot(0, serverId);
         this.leaderId = -1; // No leader initially
         this.role = Role.CANDIDATE;
-        this.operationLog = new OperationLog(onNewClientRequest);
+        this.operationLog = new OperationLog(onNewClientRequest, metricsListener);
         this.messageTracker = new ServerMessageTracker();
     }
 

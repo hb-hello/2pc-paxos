@@ -10,6 +10,7 @@ import org.example.consensus.handlers.*;
 import org.example.messaging.PaxosMessageSender;
 import org.example.messaging.PaxosService;
 import org.example.messaging.ServerMessage;
+import org.example.metrics.PaxosMetricsListener;
 import org.example.state.OperationLog;
 import org.example.state.OperationLogEntry;
 import org.example.state.PaxosState;
@@ -40,12 +41,15 @@ public class PaxosServer {
     private final AcceptedHandler acceptedHandler;
     private final CommitHandler commitHandler;
 
+    private final PaxosMetricsListener metricsListener;
+
     public PaxosServer(int serverId, ExecutorManager executorManager, TPCHooks tpcHooks) {
         this.executorManager = executorManager;
         this.promiseTimer = new LivenessTimer(getRandom(Config.getServerTimeoutMillis() / 2), this::promiseTimerCallback);
         this.clientRequestTimer = new LivenessTimer(Config.getServerTimeoutMillis(), this::clientRequestTimerCallback);
 
-        this.state = new PaxosState(serverId, executorManager.getStateExecutor(), this::onNewClientRequest);
+        this.metricsListener = new PaxosMetricsListener();
+        this.state = new PaxosState(serverId, executorManager.getStateExecutor(), this::onNewClientRequest, metricsListener);
         this.leaderElectionInProgress = new AtomicBoolean(false);
 
         this.paxosService = new PaxosService(this);
@@ -244,6 +248,7 @@ public class PaxosServer {
     }
 
     public void reset() {
+        metricsListener.printMetrics();
         promiseTimer.stop();
         clientRequestTimer.stop();
         leaderElectionInProgress.set(false);

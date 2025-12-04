@@ -232,7 +232,7 @@ public class CliMain {
         clientNode.setMetricsListener(benchmark);
 
         // Build 6000 intra-shard transfers evenly across shards
-        List<String> txs = ClientBenchmark.buildNonContentiousIntraShardTransfers(accountToClusterIndex, totalRequests);
+        List<String> txs = ClientBenchmark.buildIntraShardTransfers(accountToClusterIndex, totalRequests);
 
         System.out.printf("Starting benchmark: %d intra-shard transfers%n", totalRequests);
 

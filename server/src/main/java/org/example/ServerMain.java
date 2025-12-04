@@ -113,11 +113,11 @@ public class ServerMain {
 
         int sid = Integer.parseInt(args[0]);
 
-        // Compute a safe ISO-like timestamp for the log filename (no characters illegal on Windows)
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss.SSS"));
-        // Build a log path and expose it as a system property so Log4j can interpolate it without extra property indirection
         String logPath = "logs/server-" + sid + "/log-" + timestamp + ".log";
         System.setProperty("logPath", logPath);
+
+        System.setProperty("metricsLogPath", "logs/paxos-metrics-" + sid + ".log");
 
         // Ensure parent directories for the log file exist so the File appender can create the file
         File parent = new File(logPath).getParentFile();
@@ -126,13 +126,16 @@ public class ServerMain {
                 Files.createDirectories(parent.toPath());
             } catch (IOException ioe) {
                 // Can't rely on Log4j being configured yet; print to stderr as a last resort
-                System.err.println("Failed to create log directory '" + parent.getAbsolutePath() + "': " + ioe.getMessage());
+                System.out.println("Failed to create log directory '" + parent.getAbsolutePath() + "': " + ioe.getMessage());
             }
         }
 
         // Reconfigure Log4j context so it picks up the new system properties (logPath)
         LoggerContext context = (LoggerContext) LogManager.getContext(false);
         context.reconfigure();
+
+        Logger testMetricsLogger = LogManager.getLogger("PaxosMetricsLogger");
+        testMetricsLogger.info("Test metrics line for server {}", sid);
 
         // Now it's safe to create the ServerMain instance which in turn creates the instance logger
         Logger tempLogger = LogManager.getLogger(ServerMain.class);
