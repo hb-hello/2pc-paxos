@@ -83,17 +83,15 @@ public class ClientRequestHandler {
         }
 
         if (lockManager.acquireLockAndCheckBalance(clientRequest.getOperation(), executionMode, request.getMessageId(), database)) {
-
+            if (!clientRequestTracker.compareAndMarkAccepted(request)) return; // to avoid duplicate execution
             if (executionMode == ExecutionMode.BOTH) {
                 //Intra-Shard
                 paxosServer.triggerAccept(request, Phase.INTRA_SHARD);
-                clientRequestTracker.markAccepted(request);
                 clientRequestTracker.markIntraShard(request);
             } else {
                 //Cross-Shard
                 sendPrepare.accept(request);
                 paxosServer.triggerAccept(request, Phase.PREPARE);
-                clientRequestTracker.markAccepted(request);
             }
         } else {
             logger.info("Failed to acquire locks or insufficient balance for request {}", request);
@@ -112,8 +110,7 @@ public class ClientRequestHandler {
             ClientReply reply = ClientReply.newBuilder()
                     .setResult(result)
                     .setSenderId(serverId)
-                    .setClientId(clientRequest.getClientId())
-                    .setTimestamp(clientRequest.getTimestamp())
+                    .setRequestId(request.getMessageId())
                     .build();
 
             logger.info("Server {} executed client request {} with result {} : {}",

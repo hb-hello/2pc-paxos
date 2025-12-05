@@ -96,6 +96,7 @@ public final class ServerMessageFormatter {
         return "ClientRequest{clientId=" + m.getClientId() +
                 ", ts=" + m.getTimestamp() +
                 ", op=" + opType +
+                ", requestId=" + m.getRequestId() +
                 "}";
     }
 
@@ -108,9 +109,8 @@ public final class ServerMessageFormatter {
         } else {
             result = "emptyResult";
         }
-        return "ClientReply{clientId=" + m.getClientId() +
+        return "ClientReply{requestId=" + m.getRequestId() +
                 ", sender=" + m.getSenderId() +
-                ", ts=" + m.getTimestamp() +
                 ", " + result +
                 "}";
     }

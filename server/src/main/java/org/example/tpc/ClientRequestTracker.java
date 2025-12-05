@@ -127,6 +127,13 @@ public class ClientRequestTracker {
         }
     }
 
+    public void addAcceptedRequest(ServerMessage<ClientRequest> request, ExecutionMode mode, int otherClusterIndex) {
+        Entry newEntry = new Entry(request, mode, otherClusterIndex);
+        String id = key(request);
+        entries.putIfAbsent(id, newEntry);
+        markAccepted(request);
+    }
+
     public void storeReply(ServerMessage<ClientRequest> request,
                            ServerMessage<ClientReply> reply) {
         Entry e = entries.get(key(request));
@@ -184,6 +191,17 @@ public class ClientRequestTracker {
     public boolean isAccepted(ServerMessage<ClientRequest> request) {
         Entry e = entries.get(key(request));
         return e != null && e.isAccepted();
+    }
+
+    public boolean compareAndMarkAccepted(ServerMessage<ClientRequest> request) {
+        String id = key(request);
+        Entry e = entries.get(id);
+        if (e != null && !e.isAccepted()) {
+            e.markAccepted();
+            pendingIds.remove(id);
+            return true;
+        }
+        return false;
     }
 
     // ---------- Ack received flag API ----------
@@ -327,6 +345,24 @@ public class ClientRequestTracker {
         String id = key(request);
         entries.remove(id);
         pendingIds.remove(id);
+    }
+
+    public String printTrackedRequests() {
+        StringBuilder sb = new StringBuilder();
+        for (Entry entry : entries.values()) {
+            sb.append("Request ID: ").append(entry.getRequest().getMessageId())
+                    .append(", Accepted: ").append(entry.isAccepted())
+                    .append(", Phase: ").append(entry.getPhase())
+                    .append(", AckReceived: ").append(entry.isAckReceived())
+                    .append(", ConsensusCompleted: ").append(entry.isConsensusCompleted())
+                    .append("\n");
+        }
+        return sb.toString();
+    }
+
+    public void reset() {
+        entries.clear();
+        pendingIds.clear();
     }
 
 }

@@ -9,6 +9,7 @@ import org.example.messaging.CLIMessageSender;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.*;
 
 public class ClientNode {
@@ -144,11 +145,16 @@ public class ClientNode {
      */
     private void buildAndSendClientRequest(Operation operation, int accountId) {
         boolean readOnly = operation.getOpCase() == Operation.OpCase.BALANCE_REQUEST;
+
+        // Globally unique request id
+        String requestId = UUID.randomUUID().toString();
+
         ClientRequest request = ClientRequest.newBuilder()
                 .setTimestamp(System.currentTimeMillis())
                 .setClientId(accountId)
                 .setOperation(operation)
                 .setIsReadOnly(readOnly)
+                .setRequestId(requestId)
                 .build();
 
         sendClientRequestWithRetry(request);
@@ -240,8 +246,8 @@ public class ClientNode {
     public void handleClientReply(ClientReply reply) {
         PendingRequest ctx = pendingRequests.get(PendingRequestKey.of(reply));
         if (ctx == null) {
-            logger.warn("No pending request found for reply timestamp {} client {}",
-                    reply.getTimestamp(), reply.getClientId());
+            logger.warn("No pending request found for reply with request id {}",
+                    reply.getRequestId());
             return;
         }
         handleReplyFromNode(ctx, reply.getSenderId(), reply, false);
@@ -334,13 +340,13 @@ public class ClientNode {
         }
     }
 
-    private record PendingRequestKey(long timestamp, int clientId) {
+    private record PendingRequestKey(String requestId) {
         static PendingRequestKey of(ClientRequest request) {
-            return new PendingRequestKey(request.getTimestamp(), request.getClientId());
+            return new PendingRequestKey(request.getRequestId());
         }
 
         static PendingRequestKey of(ClientReply reply) {
-            return new PendingRequestKey(reply.getTimestamp(), reply.getClientId());
+            return new PendingRequestKey(reply.getRequestId());
         }
     }
 }

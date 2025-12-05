@@ -45,7 +45,7 @@ public class TPCMessageSender extends MessageSender {
     }
 
     public void sendClientReply(ServerMessage<ClientReply> reply) {
-        logger.info("Sending Client Reply to node {} : {}", reply.payload().getClientId(), reply);
+        logger.info("Sending Client Reply : {}", reply);
         stubManager.getClientStub(0).reply(reply.payload());
     }
 }

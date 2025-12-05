@@ -157,6 +157,9 @@ public class LockManager {
      * Check if any locks are currently held.
      */
     public boolean hasAnyLocks() {
+        if (!locks.isEmpty()) {
+            logger.info("Current locks held: {}", locks.values().toArray());
+        }
         return !locks.isEmpty();
     }
 

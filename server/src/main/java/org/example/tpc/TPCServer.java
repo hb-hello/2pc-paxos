@@ -24,7 +24,7 @@ public class TPCServer implements TPCHooks {
 
     private final int serverId;
     private final ConcurrentHashMap<Integer, Integer> leaderMap;
-    private final Map<Integer, Integer> accountIdToClusterMap;
+    private Map<Integer, Integer> accountIdToClusterMap;
 
     private final ExecutorManager executorManager;
 
@@ -96,6 +96,10 @@ public class TPCServer implements TPCHooks {
 
     public PaxosServer getPaxosServer() {
         return paxosServer;
+    }
+
+    public String getTrackedRequests() {
+        return clientRequestTracker.printTrackedRequests();
     }
 
     public void warmup() {
@@ -251,8 +255,9 @@ public class TPCServer implements TPCHooks {
         ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, request.payload().getOperation(), accountIdToClusterMap);
         int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
         logger.info("New client request {} with execution mode {} and other cluster index {} being added to tracker.", request.getMessageId(), executionMode, otherClusterIndex);
-        clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
-        clientRequestTracker.markAccepted(request);
+//        clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
+//        clientRequestTracker.markAccepted(request);
+        clientRequestTracker.addAcceptedRequest(request, executionMode, otherClusterIndex);
     }
 
     @Override
@@ -309,5 +314,10 @@ public class TPCServer implements TPCHooks {
         lockManager.releaseAllLocks();
         tpcTimer.shutdown();
         retryManager.shutdown();
+        for (int i = 0; i < Config.getServerClusterCount(); i++) {
+            leaderMap.put(i, Config.getServerIdsInCluster(i).get(0)); // Initialize with first server as leader
+        }
+        this.accountIdToClusterMap = database.getAllClusterIds();
+        clientRequestTracker.reset();
     }
 }

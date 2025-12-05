@@ -76,7 +76,7 @@ public final class MessageIndexHelper {
     }
 
     private static String clientRequestIndex(ClientRequest cr) {
-        return cr.getClientId() + ":" + cr.getTimestamp();
+        return cr.getRequestId();
     }
 
     private static String paxosIndex(long instance, int senderId,

@@ -40,6 +40,9 @@ public class StateMachineOperator {
     // Next sequence number that should be executed (in-order guarantee)
     private final AtomicLong nextToExecute = new AtomicLong(1L);
 
+    // Highest seq any caller has requested us to execute up to.
+    private final AtomicLong maxSeenTarget = new AtomicLong(0L);
+
     public StateMachineOperator(int serverId,
                                 ExecutorService stateMachineExecutor,
                                 KeyValueStore<Double> database,
@@ -90,10 +93,14 @@ public class StateMachineOperator {
      */
     public CompletableFuture<Void> execute(long seqNum, ExecutionMode mode) {
         logger.info("Scheduling execution up to seqNum {} with mode {}", seqNum, mode);
+
+        // Remember the highest target ever requested.
+        maxSeenTarget.updateAndGet(prev -> Math.max(prev, seqNum));
+
         CompletableFuture<Void> future = new CompletableFuture<>();
         stateMachineExecutor.execute(() -> {
             try {
-                executeUpTo(seqNum, mode);
+                executeAsMuchAsPossible(mode);
                 future.complete(null);
             } catch (Throwable t) {
                 logger.error("Error executing up to seqNum {}", seqNum, t);
@@ -103,11 +110,18 @@ public class StateMachineOperator {
         return future;
     }
 
-    private void executeUpTo(long targetSeq, ExecutionMode mode) {
+    private void executeAsMuchAsPossible(ExecutionMode mode) {
         while (true) {
             long current = nextToExecute.get();
-            if (current > targetSeq) {
-                logger.warn("Skipping execution for seq {} as we're already at seq {}", targetSeq, current);
+            long limit = maxSeenTarget.get();
+
+            if (current == 0L) {
+                nextToExecute.compareAndSet(0L, 1L);
+                current = nextToExecute.get();
+            }
+
+            // Nothing more requested to be executed.
+            if (current > limit) {
                 return;
             }
 
@@ -116,71 +130,149 @@ public class StateMachineOperator {
                 logger.warn("No request found at seq {}. Stopping execution.", current);
                 return;
             }
+
             ClientRequest request = requestMessage.payload();
             String requestId = requestMessage.getMessageId();
 
-            // Skip if already marked committed/executed
             if (Boolean.TRUE.equals(committedOrAborted.get(requestId))) {
+                logger.info("Skipping seq {} request {} as it is already committed/aborted on this shard.",
+                        current, requestId);
                 nextToExecute.incrementAndGet();
-                logger.info("Skipping execution for seq {} request {} as it is already committed or aborted on this shard.", current, requestId);
                 continue;
             }
 
-            OperationStatus status = operationLog.getStatus(current); // NONE/PREPARED/COMMITTED/EXECUTED/CHECKPOINTED
+            OperationStatus status = operationLog.getStatus(current);
             Phase phase = operationLog.getEntry(current).phase();
-            if (status != OperationStatus.COMMITTED && status != OperationStatus.EXECUTED && (phase == Phase.PREPARE || phase == Phase.INTRA_SHARD)) {
-                // Not ready to execute in log order yet.
-                logger.info("Skipping execution at seq {} for request {} as status is {} and phase is {}.",
-                        current, requestMessage.getMessageId(), status, phase);
+
+            boolean ready =
+                    (status == OperationStatus.COMMITTED || status == OperationStatus.EXECUTED) &&
+                            (phase == Phase.COMMIT || phase == Phase.INTRA_SHARD);
+
+            if (!ready) {
+                logger.info("Seq {} not ready to execute yet (status={}, phase={}). Stopping at this slot.",
+                        current, status, phase);
                 return;
             }
 
             if (status == OperationStatus.EXECUTED) {
-//                logger.info("Request {} at seq {} is already EXECUTED. Skipping.", requestMessage.getMessageId(), current);
                 nextToExecute.incrementAndGet();
                 continue;
             }
 
-            // Build WAL before applying the operation
-            WalEntry entry = buildWalEntry(request, mode);
-            if (entry != null) {
-                wal.put(requestId, entry);
+            WalEntry walEntry = buildWalEntry(request, mode);
+            if (walEntry != null) {
+                wal.put(requestId, walEntry);
             }
 
-            // Execute the operation on the state machine
-            OperationResult result =
-                    stateMachine.execute(request.getOperation(), mode);
+            OperationResult result = stateMachine.execute(request.getOperation(), mode);
 
             logger.info("Executed seq {} for request {} resultCase={}",
-                    current, requestMessage.getMessageId(), result.getResultCase());
+                    current, requestId, result.getResultCase());
 
-            // Build and store client reply in the tracker
             ClientReply reply = ClientReply.newBuilder()
                     .setResult(result)
                     .setSenderId(serverId)
-                    .setClientId(request.getClientId())
-                    .setTimestamp(request.getTimestamp())
+                    .setRequestId(request.getRequestId())
                     .build();
             ServerMessage<ClientReply> replyMessage = new ServerMessage<>(reply);
             requestTracker.storeReply(requestMessage, replyMessage);
 
-            // Mark as EXECUTED in the Paxos log atomically to ensure at-most-once
             boolean markedInLog = operationLog.compareAndSetStatus(
                     current, OperationStatus.COMMITTED, OperationStatus.EXECUTED);
 
-            logger.info("Marked seq {} request {} as EXECUTED in log: {}", current, requestMessage.getMessageId(), markedInLog);
+            logger.info("Marked seq {} request {} as EXECUTED in log: {}",
+                    current, requestId, markedInLog);
 
             if (!markedInLog) {
-                logger.error("Failed to mark seq {} request {} as EXECUTED in operation log", current, requestMessage.getMessageId());
+                logger.error("Failed to mark seq {} request {} as EXECUTED in operation log",
+                        current, requestId);
                 return;
             }
 
             nextToExecute.incrementAndGet();
-
-            // Notify listener that the operation has been executed
-            onExecuted.accept(requestMessage.getMessageId(), operationLog.getEntry(current).phase());
+            onExecuted.accept(requestId, phase);
         }
     }
+
+
+//    private void executeUpTo(long targetSeq, ExecutionMode mode) {
+//        while (true) {
+//            long current = nextToExecute.get();
+//            if (current > targetSeq) {
+//                logger.warn("Skipping execution for seq {} as we're already at seq {}", targetSeq, current);
+//                return;
+//            }
+//
+//            ServerMessage<ClientRequest> requestMessage = operationLog.getRequest(current);
+//            if (requestMessage == null) {
+//                logger.warn("No request found at seq {}. Stopping execution.", current);
+//                return;
+//            }
+//            ClientRequest request = requestMessage.payload();
+//            String requestId = requestMessage.getMessageId();
+//
+//            // Skip if already marked committed/executed
+//            if (Boolean.TRUE.equals(committedOrAborted.get(requestId))) {
+//                nextToExecute.incrementAndGet();
+//                logger.info("Skipping execution for seq {} request {} as it is already committed or aborted on this shard.", current, requestId);
+//                continue;
+//            }
+//
+//            OperationStatus status = operationLog.getStatus(current); // NONE/PREPARED/COMMITTED/EXECUTED/CHECKPOINTED
+//            Phase phase = operationLog.getEntry(current).phase();
+//            if (status != OperationStatus.COMMITTED && status != OperationStatus.EXECUTED && (phase == Phase.PREPARE || phase == Phase.INTRA_SHARD)) {
+//                // Not ready to execute in log order yet.
+//                logger.info("Skipping execution at seq {} for request {} as status is {} and phase is {}.",
+//                        current, requestMessage.getMessageId(), status, phase);
+//                return;
+//            }
+//
+//            if (status == OperationStatus.EXECUTED) {
+////                logger.info("Request {} at seq {} is already EXECUTED. Skipping.", requestMessage.getMessageId(), current);
+//                nextToExecute.incrementAndGet();
+//                continue;
+//            }
+//
+//            // Build WAL before applying the operation
+//            WalEntry entry = buildWalEntry(request, mode);
+//            if (entry != null) {
+//                wal.put(requestId, entry);
+//            }
+//
+//            // Execute the operation on the state machine
+//            OperationResult result =
+//                    stateMachine.execute(request.getOperation(), mode);
+//
+//            logger.info("Executed seq {} for request {} resultCase={}",
+//                    current, requestMessage.getMessageId(), result.getResultCase());
+//
+//            // Build and store client reply in the tracker
+//            ClientReply reply = ClientReply.newBuilder()
+//                    .setResult(result)
+//                    .setSenderId(serverId)
+//                    .setClientId(request.getClientId())
+//                    .setTimestamp(request.getTimestamp())
+//                    .build();
+//            ServerMessage<ClientReply> replyMessage = new ServerMessage<>(reply);
+//            requestTracker.storeReply(requestMessage, replyMessage);
+//
+//            // Mark as EXECUTED in the Paxos log atomically to ensure at-most-once
+//            boolean markedInLog = operationLog.compareAndSetStatus(
+//                    current, OperationStatus.COMMITTED, OperationStatus.EXECUTED);
+//
+//            logger.info("Marked seq {} request {} as EXECUTED in log: {}", current, requestMessage.getMessageId(), markedInLog);
+//
+//            if (!markedInLog) {
+//                logger.error("Failed to mark seq {} request {} as EXECUTED in operation log", current, requestMessage.getMessageId());
+//                return;
+//            }
+//
+//            nextToExecute.incrementAndGet();
+//
+//            // Notify listener that the operation has been executed
+//            onExecuted.accept(requestMessage.getMessageId(), operationLog.getEntry(current).phase());
+//        }
+//    }
 
     /**
      * For non-read-only operations, capture the pre-operation balances of all

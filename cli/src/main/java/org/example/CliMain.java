@@ -224,6 +224,14 @@ public class CliMain {
         }
     }
 
+    private void fetchAndPrintTrackedRequests(int serverId) {
+        try {
+            cliMessageSender.printTrackedRequests(serverId);
+        } catch (Exception e) {
+            System.out.println("Error fetching tracked requests for server " + serverId + ": " + e.getMessage());
+        }
+    }
+
     // In CliMain.java
 
     private void runBenchmark(int totalRequests) {
@@ -251,7 +259,7 @@ public class CliMain {
 
         try {
             // Wait up to e.g. 60 seconds for all replies
-            benchmark.awaitCompletion(60, TimeUnit.SECONDS);
+            benchmark.awaitCompletion(10, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             System.out.println("Benchmark interrupted.");
@@ -277,8 +285,8 @@ public class CliMain {
     public void handleClientReply(ClientReply reply) {
         ClientNode clientNode = this.activeClientNode;
         if (clientNode == null) {
-            logger.warn("Dropping client reply for timestamp {} client {} because no active client node is registered.",
-                    reply.getTimestamp(), reply.getClientId());
+            logger.warn("Dropping client reply for request id {} because no active client node is registered.",
+                    reply.getRequestId());
             return;
         }
         clientNode.handleClientReply(reply);
@@ -329,7 +337,7 @@ public class CliMain {
             System.out.println("Options:");
             System.out.println(" 1 - PrintDB");
             System.out.println(" 2 - PrintLog");
-            System.out.println(" 3 - PrintStatus");
+            System.out.println(" 3 - PrintRequests");
             System.out.println(" 4 - PrintView");
             System.out.println(" 5 - Continue with next set (#" + nextSetNumber + ")");
             System.out.println(" 6 - DEBUG: PrintOperationLog");
@@ -355,6 +363,19 @@ public class CliMain {
                             break;
                         }
                         cli.fetchAndPrintLog(serverId);
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid server ID.");
+                    }
+                }
+                case "3" -> {
+                    System.out.print("Enter server ID to print requests from: ");
+                    try {
+                        int serverId = Integer.parseInt(sc.nextLine().trim());
+                        if (serverId <= 0 || serverId > Config.getServerCount()) {
+                            System.out.println("Server ID must be positive and less than " + (Config.getServerCount() + 1) + ".");
+                            break;
+                        }
+                        cli.fetchAndPrintTrackedRequests(serverId);
                     } catch (NumberFormatException e) {
                         System.out.println("Invalid server ID.");
                     }

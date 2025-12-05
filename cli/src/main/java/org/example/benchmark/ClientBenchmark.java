@@ -1,8 +1,15 @@
 package org.example.benchmark;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.example.ClientRequest;
 import org.example.config.Config;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -11,6 +18,7 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.ThreadLocalRandom;
 
 public class ClientBenchmark implements ClientMetricsListener {
+    private static final Logger logger = LogManager.getLogger(ClientBenchmark.class);
 
     private final CountDownLatch latch;
 
@@ -108,7 +116,7 @@ public class ClientBenchmark implements ClientMetricsListener {
                 int receiver = accounts.get(receiverIdx);
 
                 double amount = rnd.nextDouble(1.0, 10.0);
-                // Simple "a,b,amount" format; ClientNode will parse as a transfer. [attached_file:1]
+
                 String tx = sender + "," + receiver + "," + String.format(Locale.US, "%.2f", amount);
                 txs.add(tx);
             }
@@ -116,7 +124,32 @@ public class ClientBenchmark implements ClientMetricsListener {
 
         // Shuffle for random order across shards
         Collections.shuffle(txs, rnd);
+        writeTransactionsToFile(txs, "intra_shard_transfers_" + System.currentTimeMillis() + ".txt");
+        logger.info("Built {} intra-shard transfer transactions.", txs.size());
         return txs;
+    }
+
+    /**
+     * Persist a set of transactions to a newline-delimited text file.
+     *
+     * @param transactions list of CSV-formatted transactions
+     * @param outputPath   target path (relative or absolute). Parent directories are created if needed.
+     */
+    public static void writeTransactionsToFile(List<String> transactions, String outputPath) {
+        Objects.requireNonNull(transactions, "transactions");
+        Objects.requireNonNull(outputPath, "outputPath");
+
+        Path path = Paths.get(outputPath);
+        try {
+            Path parent = path.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.write(path, transactions, StandardCharsets.UTF_8);
+            logger.info("Wrote {} transactions to {}", transactions.size(), path.toAbsolutePath());
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to write transactions to " + path + ": " + e.getMessage(), e);
+        }
     }
 
     /**

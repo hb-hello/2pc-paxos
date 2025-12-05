@@ -101,6 +101,10 @@ public class ServerMain {
         return server.getPaxosServer().printOperationLog();
     }
 
+    public String getTrackedRequests() {
+        return server.getTrackedRequests();
+    }
+
     public void shutdown() {
         logger.info("Shutting down Server {}", serverId);
         messageReceiver.shutdown();

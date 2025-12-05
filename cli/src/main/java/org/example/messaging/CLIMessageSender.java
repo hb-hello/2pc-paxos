@@ -102,4 +102,15 @@ public class CLIMessageSender extends MessageSender {
             throw new RuntimeException(e);
         }
     }
+
+    public void printTrackedRequests(int serverId) {
+        // Collect responses for all servers, preserving order
+        try {
+            CLIResponse response =
+                    stubManager.getCLIBlockingStub(serverId).getRequests(Empty.getDefaultInstance());
+            System.out.println(response.getCliResponse());
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 }
