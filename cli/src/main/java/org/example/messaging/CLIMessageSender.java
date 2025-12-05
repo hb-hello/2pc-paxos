@@ -91,4 +91,15 @@ public class CLIMessageSender extends MessageSender {
         // Print a single consolidated table for all server responses
         CLIFormatter.printDBAsTable(responses);
     }
+
+    public void printOperationLog(int serverId) {
+        // Collect responses for all servers, preserving order
+        try {
+            CLIResponse response =
+                    stubManager.getCLIBlockingStub(serverId).getLog(Empty.getDefaultInstance());
+            System.out.println(response.getCliResponse());
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 }

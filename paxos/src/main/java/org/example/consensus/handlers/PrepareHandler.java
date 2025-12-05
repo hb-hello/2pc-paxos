@@ -26,14 +26,14 @@ public class PrepareHandler {
     public void handle(ServerMessage<PrepareMessage> prepare, StreamObserver<PromiseMessage> responseObserver) {
         logger.info("Received Prepare message: {}", prepare);
         Ballot newBallot = new Ballot(prepare.payload().getBallot());
-        if (state.updateBallot(newBallot)) {
+        if (state.transitionToCandidate(newBallot)) {
             PromiseMessage promise = state.getPromiseMessage().toBuilder()
                     .setBallot(newBallot.toProto())
                     .setSenderId(state.getServerId())
                     .build();
             responseObserver.onNext(promise);
             responseObserver.onCompleted();
-            if (state.isCandidate()) promiseTimer.restart("sending a promise");
+            promiseTimer.restart("sending a promise for ballot " + newBallot);
             logger.info("Sent Promise message: {}", new ServerMessage<>(promise));
         }
     }

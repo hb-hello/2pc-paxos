@@ -60,6 +60,15 @@ public class CLIServiceServer extends CLIServiceGrpc.CLIServiceImplBase {
     }
 
     @Override
+    public void getLog(Empty request, StreamObserver<CLIResponse> responseObserver) {
+        logger.info("Received getLog request");
+        String logContent = server.getOperationLog();
+        CLIResponse response = CLIResponse.newBuilder().setCliResponse(logContent).build();
+        responseObserver.onNext(response);
+        responseObserver.onCompleted();
+    }
+
+    @Override
     public void ping(Empty request, StreamObserver<Empty> responseObserver) {
         logger.debug("Received ping request");
         responseObserver.onNext(Empty.newBuilder().build());

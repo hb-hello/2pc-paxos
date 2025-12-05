@@ -97,6 +97,10 @@ public class ServerMain {
         }
     }
 
+    public String getOperationLog() {
+        return server.getPaxosServer().printOperationLog();
+    }
+
     public void shutdown() {
         logger.info("Shutting down Server {}", serverId);
         messageReceiver.shutdown();

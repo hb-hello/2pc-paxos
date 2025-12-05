@@ -48,6 +48,8 @@ public final class BankStateMachine implements StateMachine {
     public void restoreBalance(int accountId, double balance) {
         database.put(accountId, balance);
         modifiedBalances.put(accountId, balance);
+        logger.info("restoreBalance: marking account {} as modified (size now {})",
+                accountId, modifiedBalances.size());
     }
 
     @Override
@@ -103,6 +105,8 @@ public final class BankStateMachine implements StateMachine {
 
                 modifiedBalances.put(sender, newFrom);
                 modifiedBalances.put(receiver, newTo);
+//                logger.info("handleTransferBoth: transferred {} from {} to {}; modifiedBalances size now {}",
+//                        amount, sender, receiver, modifiedBalances.size());
 
                 return StateMachineOperationResultMapper.toProto(
                         StateMachineOperationResult.success(true)

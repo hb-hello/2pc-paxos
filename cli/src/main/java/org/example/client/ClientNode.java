@@ -278,6 +278,9 @@ public class ClientNode {
         scheduler.schedule(() -> onRequestTimeout(key),
                 deadlineMillis, TimeUnit.MILLISECONDS);
 
+        long start = System.currentTimeMillis();
+        ctx.setStartTimeMillis(start);
+
         // Send RPCs (outside synchronized block)
         for (int nodeId : nodeIds) {
             messageSender.sendClientRequestWithDeadline(nodeId, request, deadlineMillis);
@@ -310,7 +313,7 @@ public class ClientNode {
     private static final class PendingRequest {
         final ClientRequest request;
         final int clusterIndex;
-        final long startTimeMillis;
+        long startTimeMillis;
 
         boolean completed = false;
         int broadcastRound = 0;
@@ -324,6 +327,10 @@ public class ClientNode {
 
         public String key() {
             return request.getClientId() + ":" + request.getTimestamp();
+        }
+
+        public void setStartTimeMillis(long startTimeMillis) {
+            this.startTimeMillis = startTimeMillis;
         }
     }
 

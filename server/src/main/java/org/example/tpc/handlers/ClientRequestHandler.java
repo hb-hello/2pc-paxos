@@ -47,7 +47,7 @@ public class ClientRequestHandler {
 
     public void handle(ServerMessage<ClientRequest> request) {
 
-        if (clientRequestTracker.isAccepted(request)) {
+        if (clientRequestTracker.hasRequest(request)) {
             logger.info("Received duplicate client request {}. Checking for stored reply.", request.getMessageId());
             ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(request);
             if (replyMessage != null) {
@@ -76,13 +76,13 @@ public class ClientRequestHandler {
         ClientRequest clientRequest = request.payload();
         ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, clientRequest.getOperation(), accountIdToClusterMap);
 
-        if (lockManager.acquireLockAndCheckBalance(clientRequest.getOperation(), executionMode, request.getMessageId(), database)) {
+        if (!clientRequestTracker.hasRequest(request)) {
+            int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
+            clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
+            logger.info("Added client request {} to tracker as leader with execution mode {} and otherClusterIndex {}", request.getMessageId(), executionMode.name(), otherClusterIndex);
+        }
 
-            if (!clientRequestTracker.hasRequest(request)) {
-                int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
-                clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
-                logger.info("Added client request {} to tracker as leader with execution mode {} and otherClusterIndex {}", request.getMessageId(), executionMode.name(), otherClusterIndex);
-            }
+        if (lockManager.acquireLockAndCheckBalance(clientRequest.getOperation(), executionMode, request.getMessageId(), database)) {
 
             if (executionMode == ExecutionMode.BOTH) {
                 //Intra-Shard

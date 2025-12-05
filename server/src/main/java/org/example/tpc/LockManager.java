@@ -154,6 +154,13 @@ public class LockManager {
     }
 
     /**
+     * Check if any locks are currently held.
+     */
+    public boolean hasAnyLocks() {
+        return !locks.isEmpty();
+    }
+
+    /**
      * Release all currently held locks on this node.
      * Intended to be called when the node transitions to a backup role
      * and should not own any application-level locks.

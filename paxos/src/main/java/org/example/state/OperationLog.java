@@ -267,4 +267,18 @@ public class OperationLog {
 
         return newViewBuilder.build();
     }
+
+    public String printLog() {
+        StringBuilder sb = new StringBuilder();
+        for (long i = 1L; i < nextSeqNum.get(); i++) {
+            OperationLogEntry entry = entries.get(i);
+            sb.append("Seq ").append(i)
+              .append(": Status=").append(entry.status())
+              .append(", Phase=").append(entry.phase())
+              .append(", Ballot=").append(entry.ballot())
+              .append(", Request=").append(entry.request().getMessageId())
+              .append("\n");
+        }
+        return sb.toString();
+    }
 }

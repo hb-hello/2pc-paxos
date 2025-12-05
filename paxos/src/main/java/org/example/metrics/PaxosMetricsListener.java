@@ -49,29 +49,14 @@ public class PaxosMetricsListener implements MetricsListener {
         //                .forEach(entry -> logSeqMetrics(entry.getKey(), entry.getValue()));
 
         // Global averages for each segment; each segment has its own sample count.
-        SegmentStats noneToAcc = new SegmentStats();
-        SegmentStats noneToCom = new SegmentStats();
         SegmentStats accToCom  = new SegmentStats();
         SegmentStats comToExe  = new SegmentStats();
-        SegmentStats exeToCp   = new SegmentStats();
 
         for (var entry : timings.entrySet()) {
             var ts = entry.getValue();
-            long none        = ts.noneTime.get();
             long accepted    = ts.acceptedTime.get();
             long committed   = ts.committedTime.get();
             long executed    = ts.executedTime.get();
-            long checkpointed = ts.checkpointedTime.get();
-
-            // NONE -> ACCEPTED
-            if (none > 0L && accepted > 0L && accepted > none) {
-                noneToAcc.add((accepted - none) / 1_000_000.0);
-            }
-
-            // NONE -> COMMITTED
-            if (none > 0L && committed > 0L && committed > none) {
-                noneToCom.add((committed - none) / 1_000_000.0);
-            }
 
             // ACCEPTED -> COMMITTED
             if (accepted > 0L && committed > 0L && committed > accepted) {
@@ -82,45 +67,24 @@ public class PaxosMetricsListener implements MetricsListener {
             if (committed > 0L && executed > 0L && executed > committed) {
                 comToExe.add((executed - committed) / 1_000_000.0);
             }
-
-            // EXECUTED -> CHECKPOINTED
-            if (executed > 0L && checkpointed > 0L && checkpointed > executed) {
-                exeToCp.add((checkpointed - executed) / 1_000_000.0);
-            }
         }
 
         String summary = String.format(
                 """
                 Average Paxos metrics
-                  Samples   none->acc=%d  none->com=%d  acc->com=%d
-                            com->exe=%d  exe->cp=%d
+                  Samples   acc->com=%d  com->exe=%d
                   Durations (ms)
-                      none->acc  avg=%s  min=%s  max=%s
-                      none->com  avg=%s  min=%s  max=%s
                       acc->com   avg=%s  min=%s  max=%s
                       com->exe   avg=%s  min=%s  max=%s
-                      exe->cp    avg=%s  min=%s  max=%s
                 """.stripTrailing(),
-                noneToAcc.count(),
-                noneToCom.count(),
                 accToCom.count(),
                 comToExe.count(),
-                exeToCp.count(),
-                formatDuration(noneToAcc.average()),
-                formatDuration(noneToAcc.min()),
-                formatDuration(noneToAcc.max()),
-                formatDuration(noneToCom.average()),
-                formatDuration(noneToCom.min()),
-                formatDuration(noneToCom.max()),
                 formatDuration(accToCom.average()),
                 formatDuration(accToCom.min()),
                 formatDuration(accToCom.max()),
                 formatDuration(comToExe.average()),
                 formatDuration(comToExe.min()),
-                formatDuration(comToExe.max()),
-                formatDuration(exeToCp.average()),
-                formatDuration(exeToCp.min()),
-                formatDuration(exeToCp.max())
+                formatDuration(comToExe.max())
         );
 
         metricsLogger.info("{}", summary);

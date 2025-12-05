@@ -216,6 +216,14 @@ public class CliMain {
         }
     }
 
+    private void fetchAndPrintLog(int serverId) {
+        try {
+            cliMessageSender.printOperationLog(serverId);
+        } catch (Exception e) {
+            System.out.println("Error fetching operation log for server " + serverId + ": " + e.getMessage());
+        }
+    }
+
     // In CliMain.java
 
     private void runBenchmark(int totalRequests) {
@@ -338,6 +346,19 @@ public class CliMain {
                     System.out.println("Printing DB contents from all servers:");
                     cli.fetchAndPrintDB();
                 }
+                case "2" -> {
+                    System.out.print("Enter server ID to print log from: ");
+                    try {
+                        int serverId = Integer.parseInt(sc.nextLine().trim());
+                        if (serverId <= 0 || serverId > Config.getServerCount()) {
+                            System.out.println("Server ID must be positive and less than " + (Config.getServerCount() + 1) + ".");
+                            break;
+                        }
+                        cli.fetchAndPrintLog(serverId);
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid server ID.");
+                    }
+                }
                 case "5" -> {
                     System.out.println("Processing transaction set #" + (nextSetNumber));
                     cli.processTransactionSet(nextSetNumber);
@@ -363,7 +384,7 @@ public class CliMain {
                     cli.printDBForAccountId(idStr);
                 }
                 case "10" -> {
-                    cli.runBenchmark(150);
+                    cli.runBenchmark(300);
                 }
                 case "0" -> {
                     System.out.println("Exiting...");

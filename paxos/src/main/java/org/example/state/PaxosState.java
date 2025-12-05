@@ -27,8 +27,9 @@ public class PaxosState {
     private final ServerMessageTracker messageTracker;
 
     private boolean sentPrepare = false;
+    private final Runnable onRoleChangeToBackup;
 
-    public PaxosState(int serverId, ExecutorService stateExec, Consumer<ServerMessage<ClientRequest>> onNewClientRequest, MetricsListener metricsListener) {
+    public PaxosState(int serverId, ExecutorService stateExec, Consumer<ServerMessage<ClientRequest>> onNewClientRequest, Runnable onRoleChangeToBackup, MetricsListener metricsListener) {
         this.serverId = serverId;
         this.stateExec = stateExec;
         this.ballot = new Ballot(0, serverId);
@@ -36,6 +37,7 @@ public class PaxosState {
         this.role = Role.CANDIDATE;
         this.operationLog = new OperationLog(onNewClientRequest, metricsListener);
         this.messageTracker = new ServerMessageTracker();
+        this.onRoleChangeToBackup = onRoleChangeToBackup;
     }
 
     // Core scheduling helpers
@@ -158,6 +160,19 @@ public class PaxosState {
         });
     }
 
+    public boolean transitionToCandidate(Ballot newBallot) {
+        return runSync(() -> {
+            if (newBallot.isGreaterThan(ballot)) {
+                role = Role.CANDIDATE;
+                ballot.setBallot(newBallot);
+                setSentPrepare(false);
+                logger.info("Server {} transitioning to candidate role with ballot {}", serverId, ballot);
+                return true;
+            }
+            return false;
+        });
+    }
+
     public boolean checkBallotAndTransitionToLeader(Ballot newBallot) {
         return runSync(() -> {
             if (isLeader()) return true;
@@ -175,6 +190,7 @@ public class PaxosState {
         runSync(() -> {
             role = Role.BACKUP;
             leaderId = ballot.getServerId();
+            onRoleChangeToBackup.run();
             logger.info("Server {} transitioned to BACKUP with leader ID {}", serverId, leaderId);
         });
     }
@@ -241,5 +257,9 @@ public class PaxosState {
 
     public NewViewMessage getNewView() {
         return operationLog.getNewViewMessageWithLogs().toBuilder().setBallot(ballot.toProto()).build();
+    }
+
+    public String printOperationLog() {
+        return operationLog.printLog();
     }
 }

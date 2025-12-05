@@ -86,6 +86,8 @@ public class TPCServer implements TPCHooks {
                 tpcTimer
         );
         this.preparedHandler = new PreparedHandler(tpcTimer, clientRequestTracker, this::markCommittedAndSend);
+
+        logger.info("TPCServer {} initialized.", serverId);
     }
 
     public List<BindableService> getServices() {
@@ -101,6 +103,7 @@ public class TPCServer implements TPCHooks {
     }
 
     public Set<Integer> getModifiedAccounts() {
+        logger.info("Getting modified accounts from StateMachineOperator, count so far: {}", operator.getModifiedAccounts().size());
         return operator.getModifiedAccounts();
     }
 
@@ -131,21 +134,31 @@ public class TPCServer implements TPCHooks {
         }
     }
 
+    private void processPendingClientRequestsAsLeader() {
+        for (ServerMessage<ClientRequest> request : clientRequestTracker.getPendingClientRequests()) {
+            logger.info("Re-handling pending client request {} as leader", request.getMessageId());
+            clientRequestHandler.handleClientRequestAsLeader(request);
+        }
+    }
+
+    private void processPendingClientRequestsAsBackup() {
+        for (ServerMessage<ClientRequest> request : clientRequestTracker.getPendingClientRequests()) {
+            logger.info("Re-handling pending client request {} as backup", request.getMessageId());
+            paxosServer.handleClientRequestAsNonLeader(request);
+        }
+    }
+
     private void releaseLocks(String requestId) {
         ExecutionMode mode = clientRequestTracker.getExecutionMode(requestId);
         lockManager.releaseLock(clientRequestTracker.getOperation(requestId), mode, requestId);
         operator.markCommittedOrAborted(requestId);
     }
 
-    private void releaseLocksAndSendReply(ServerMessage<ClientRequest> request, Phase phase) {
-        executorManager.submitMessageProcessing(() -> releaseLocksAndSendReply(request.getMessageId(), phase));
-    }
-
     private void releaseLocksAndSendReply(String requestId, Phase phase) {
         if (phase == Phase.INTRA_SHARD || (phase == Phase.COMMIT && clientRequestTracker.isCommitted(requestId))) {
             releaseLocks(requestId);
+            paxosServer.refreshTimerOnExecute(requestId, lockManager.hasAnyLocks());
             clientRequestTracker.markCommitted(requestId);
-            paxosServer.refreshTimerOnExecute();
             if (paxosServer.isLeader()) {
                 ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(requestId);
                 if (replyMessage != null) {
@@ -153,6 +166,7 @@ public class TPCServer implements TPCHooks {
                 } else {
                     logger.error("No reply found for committed request {}", requestId);
                 }
+                if (!lockManager.hasAnyLocks()) executorManager.submitMessageProcessing(this::processPendingClientRequestsAsLeader);
             }
         }
     }
@@ -168,7 +182,8 @@ public class TPCServer implements TPCHooks {
                     .build();
             messageSender.sendPrepare(otherClusterLeaderId, new ServerMessage<>(tpcPrepareMessage));
             tpcTimer.start(request);
-        } else logger.error("No other cluster index found while sending prepare for request {}", request.getMessageId());
+        } else
+            logger.error("No other cluster index found while sending prepare for request {}", request.getMessageId());
     }
 
     private void markCommittedAndSend(ServerMessage<ClientRequest> request) {
@@ -228,10 +243,7 @@ public class TPCServer implements TPCHooks {
 
     @Override
     public void onRoleChangeToLeader() {
-        for (ServerMessage<ClientRequest> request : clientRequestTracker.getPendingClientRequests()) {
-            logger.info("Re-handling pending client request {} as leader", request.getMessageId());
-            clientRequestHandler.handleClientRequestAsLeader(request);
-        }
+        processPendingClientRequestsAsLeader();
     }
 
     @Override
@@ -247,7 +259,7 @@ public class TPCServer implements TPCHooks {
     public void onPaxosNewView(ServerMessage<NewViewMessage> newViewMessage) {
         NewViewMessage newView = newViewMessage.payload();
 
-        for (AcceptMessage acceptMessage: newView.getAcceptLogList()) {
+        for (AcceptMessage acceptMessage : newView.getAcceptLogList()) {
             Phase phase = acceptMessage.getPhase();
             ServerMessage<ClientRequest> request = new ServerMessage<>(acceptMessage.getRequest());
             onNewClientRequest(request);
@@ -289,6 +301,7 @@ public class TPCServer implements TPCHooks {
         tpcTimer.shutdown();
         retryManager.shutdown();
         lockManager.releaseAllLocks();
+        processPendingClientRequestsAsBackup();
     }
 
     public void reset() {

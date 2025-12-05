@@ -19,6 +19,7 @@ public class LivenessTimer {
     private final AtomicBoolean isRunning;
     private final AtomicBoolean isExecutingCallback;
     private final AtomicLong runGeneration;
+    private final Object lifecycleLock = new Object();
 
     public LivenessTimer(long timeoutMillis, Runnable callback) {
         this.timeoutMillis = timeoutMillis;
@@ -31,18 +32,18 @@ public class LivenessTimer {
         this.runGeneration = new AtomicLong(0L);
     }
 
-    private void start(String name) {
+    private void startLocked(String name) {
         try {
             isRunning.set(true);
             final long runId = runGeneration.incrementAndGet();
             ScheduledFuture<?> future = scheduler.schedule(() -> {
-                // Timer has fired - no longer running
                 isRunning.set(false);
                 if (runGeneration.get() != runId) {
                     logger.debug("Timer firing skipped for {} due to stale run {}", name, runId);
+                    scheduledFutureRef.set(null);
                     return;
                 }
-                // Submit callback to separate executor
+                scheduledFutureRef.set(null);
                 callbackExecutor.submit(() -> {
                     if (runGeneration.get() != runId) {
                         return;
@@ -61,22 +62,34 @@ public class LivenessTimer {
 
             scheduledFutureRef.set(future);
         } catch (Exception e) {
+            isRunning.set(false);
             throw new RuntimeException("Timer errored out : " + e.getMessage());
         }
     }
 
     public void startIfNotRunning(String name) {
-        if (!isRunning.get()) {
-            start(name);
+        synchronized (lifecycleLock) {
+            if (isRunning.get()) {
+                return;
+            }
+            startLocked(name);
         }
     }
 
     public void restart(String name) {
-        stop();
-        start(name);
+        synchronized (lifecycleLock) {
+            cancelLocked();
+            startLocked(name);
+        }
     }
 
-    public synchronized void stop() {
+    public void stop() {
+        synchronized (lifecycleLock) {
+            cancelLocked();
+        }
+    }
+
+    private void cancelLocked() {
         ScheduledFuture<?> currentFuture = scheduledFutureRef.get();
         if (currentFuture != null) {
             boolean mayInterrupt = !isExecutingCallback.get();
@@ -91,10 +104,8 @@ public class LivenessTimer {
         return isRunning.get();
     }
 
-    public boolean isExecutingCallback() {
-        return isExecutingCallback.get();
-    }
 
+    @SuppressWarnings("unused")
     public void shutdown() {
         stop();
 

@@ -49,7 +49,7 @@ public class PaxosServer {
         this.clientRequestTimer = new LivenessTimer(Config.getServerTimeoutMillis(), this::clientRequestTimerCallback);
 
         this.metricsListener = new PaxosMetricsListener();
-        this.state = new PaxosState(serverId, executorManager.getStateExecutor(), this::onNewClientRequest, metricsListener);
+        this.state = new PaxosState(serverId, executorManager.getStateExecutor(), this::onNewClientRequest, tpcHooks::onRoleChangeToBackup, metricsListener);
         this.leaderElectionInProgress = new AtomicBoolean(false);
 
         this.paxosService = new PaxosService(this);
@@ -103,6 +103,10 @@ public class PaxosServer {
         return state.getOperationLog();
     }
 
+    public String printOperationLog() {
+        return state.printOperationLog();
+    }
+
     public ServerMessage<ClientRequest> getClientRequestBySeqNum(long sequenceNumber) {
         return state.getOperationLog().getRequest(sequenceNumber);
     }
@@ -143,7 +147,7 @@ public class PaxosServer {
     }
 
     public void initiateLeaderElection() {
-        if (!leaderElectionInProgress.get()) {
+        if (!leaderElectionInProgress.get() && !promiseTimer.isRunning()) {
             leaderElectionInProgress.set(true);
             clientRequestTimer.stop();
             state.runSync(() -> {
@@ -188,7 +192,7 @@ public class PaxosServer {
     }
 
     public void triggerAccept(ServerMessage<ClientRequest> request, Phase phase, long seqNum) {
-        state.acceptRequestWithSeqNum(request, phase, seqNum);
+        if (!state.acceptRequestWithSeqNum(request, phase, seqNum)) return;
         promiseTimer.stop();
         clientRequestTimer.startIfNotRunning("handling client request to trigger accept for commit phase : " + request.getMessageId());
         if (state.isLeader()) {
@@ -211,7 +215,7 @@ public class PaxosServer {
                 .setRequest(entry.request().payload())
                 .build();
         ServerMessage<CommitMessage> commitMessage = new ServerMessage<>(commit);
-        triggerCommit(commitMessage);
+        executorManager.submitMessageProcessing(() -> triggerCommit(commitMessage));
     }
 
     public void triggerCommit(ServerMessage<CommitMessage> commitMessage) {
@@ -222,12 +226,13 @@ public class PaxosServer {
         }
     }
 
-    public void refreshTimerOnExecute() {
-        if (state.hasRequestsWaitingToExecute()) {
-            logger.info("Pending client requests detected; restarting client request timer.");
-            clientRequestTimer.restart("refreshing timer on execute");
+    public void refreshTimerOnExecute(String requestId, boolean restart) {
+        if (restart) {
+            state.hasRequestsWaitingToExecute();
+            logger.info("Pending locks detected; restarting client request timer.");
+            clientRequestTimer.restart("refreshing timer on execute for request id: " + requestId);
         } else {
-            logger.info("No pending client requests to execute; stopping client request timer.");
+            logger.info("No pending locks to execute; stopping client request timer after executing request id: {}", requestId);
             clientRequestTimer.stop();
         }
     }

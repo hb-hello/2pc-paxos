@@ -29,6 +29,9 @@ public class PromiseHandler {
 
     public void handle(ServerMessage<PromiseMessage> promise) {
         logger.info("Received promise message {}", promise);
+
+        if (state.isLeader()) return; // ignore promises after becoming leader
+
         promiseTimer.restart("receiving a promise");
 
         for (AcceptMessage msg : promise.payload().getAcceptLogList()) {

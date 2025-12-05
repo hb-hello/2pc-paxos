@@ -29,7 +29,7 @@ public class StateMachineOperator {
     private final BankStateMachine stateMachine;
     private final OperationLog operationLog;
     private final ClientRequestTracker requestTracker;
-    private final BiConsumer<ServerMessage<ClientRequest>, Phase> onExecuted;
+    private final BiConsumer<String, Phase> onExecuted;
 
     // WAL: client request -> before-image of mutated accounts
     private final ConcurrentMap<String, WalEntry> wal = new ConcurrentHashMap<>();
@@ -45,7 +45,7 @@ public class StateMachineOperator {
                                 KeyValueStore<Double> database,
                                 OperationLog operationLog,
                                 ClientRequestTracker requestTracker,
-                                BiConsumer<ServerMessage<ClientRequest>, Phase> onExecuted) {
+                                BiConsumer<String, Phase> onExecuted) {
         this.serverId = serverId;
         this.stateMachineExecutor = stateMachineExecutor;
         this.stateMachine = new BankStateMachine(database); // owns the DB-backed state machine
@@ -89,6 +89,7 @@ public class StateMachineOperator {
      * on the stateExecutor.
      */
     public CompletableFuture<Void> execute(long seqNum, ExecutionMode mode) {
+        logger.info("Scheduling execution up to seqNum {} with mode {}", seqNum, mode);
         CompletableFuture<Void> future = new CompletableFuture<>();
         stateMachineExecutor.execute(() -> {
             try {
@@ -106,11 +107,13 @@ public class StateMachineOperator {
         while (true) {
             long current = nextToExecute.get();
             if (current > targetSeq) {
+                logger.warn("Skipping execution for seq {} as we're already at seq {}", targetSeq, current);
                 return;
             }
 
             ServerMessage<ClientRequest> requestMessage = operationLog.getRequest(current);
             if (requestMessage == null) {
+                logger.warn("No request found at seq {}. Stopping execution.", current);
                 return;
             }
             ClientRequest request = requestMessage.payload();
@@ -119,6 +122,7 @@ public class StateMachineOperator {
             // Skip if already marked committed/executed
             if (Boolean.TRUE.equals(committedOrAborted.get(requestId))) {
                 nextToExecute.incrementAndGet();
+                logger.info("Skipping execution for seq {} request {} as it is already committed or aborted on this shard.", current, requestId);
                 continue;
             }
 
@@ -126,10 +130,13 @@ public class StateMachineOperator {
             Phase phase = operationLog.getEntry(current).phase();
             if (status != OperationStatus.COMMITTED && status != OperationStatus.EXECUTED && (phase == Phase.PREPARE || phase == Phase.INTRA_SHARD)) {
                 // Not ready to execute in log order yet.
+                logger.info("Skipping execution at seq {} for request {} as status is {} and phase is {}.",
+                        current, requestMessage.getMessageId(), status, phase);
                 return;
             }
 
             if (status == OperationStatus.EXECUTED) {
+//                logger.info("Request {} at seq {} is already EXECUTED. Skipping.", requestMessage.getMessageId(), current);
                 nextToExecute.incrementAndGet();
                 continue;
             }
@@ -144,8 +151,8 @@ public class StateMachineOperator {
             OperationResult result =
                     stateMachine.execute(request.getOperation(), mode);
 
-            logger.info("Executed seq {} for client {} resultCase={}",
-                    current, request.getClientId(), result.getResultCase());
+            logger.info("Executed seq {} for request {} resultCase={}",
+                    current, requestMessage.getMessageId(), result.getResultCase());
 
             // Build and store client reply in the tracker
             ClientReply reply = ClientReply.newBuilder()
@@ -158,13 +165,20 @@ public class StateMachineOperator {
             requestTracker.storeReply(requestMessage, replyMessage);
 
             // Mark as EXECUTED in the Paxos log atomically to ensure at-most-once
-            operationLog.compareAndSetStatus(
+            boolean markedInLog = operationLog.compareAndSetStatus(
                     current, OperationStatus.COMMITTED, OperationStatus.EXECUTED);
+
+            logger.info("Marked seq {} request {} as EXECUTED in log: {}", current, requestMessage.getMessageId(), markedInLog);
+
+            if (!markedInLog) {
+                logger.error("Failed to mark seq {} request {} as EXECUTED in operation log", current, requestMessage.getMessageId());
+                return;
+            }
 
             nextToExecute.incrementAndGet();
 
             // Notify listener that the operation has been executed
-            onExecuted.accept(requestMessage, operationLog.getEntry(current).phase());
+            onExecuted.accept(requestMessage.getMessageId(), operationLog.getEntry(current).phase());
         }
     }
 
