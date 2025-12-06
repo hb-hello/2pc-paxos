@@ -58,7 +58,7 @@ public class PaxosServer {
         this.clientRequestHandler = new ClientRequestHandler(state, messageSender, executorManager);
         this.prepareHandler = new PrepareHandler(state, promiseTimer);
         this.promiseHandler = new PromiseHandler(state, promiseTimer, this::triggerNewView);
-        this.newViewHandler = new NewViewHandler(state, promiseTimer);
+        this.newViewHandler = new NewViewHandler(state, promiseTimer, this::acceptLatestCheckpointSeqSeen);
         this.acceptHandler = new AcceptHandler(state, clientRequestTimer, promiseTimer);
         this.acceptedHandler = new AcceptedHandler(state, this::triggerCommit);
         this.commitHandler = new CommitHandler(state, this::triggerCommit);
@@ -143,6 +143,8 @@ public class PaxosServer {
     }
 
     public void handleCheckpoint(ServerMessage<CheckpointMessage> checkpointMessage) {
+        if (state.getApplyingCheckpoint()) return;
+        state.setApplyingCheckpoint(true);
         tpcHooks.applyCheckpoint(checkpointMessage.payload().getSequenceNumber(), checkpointMessage.payload().getState());
     }
 
@@ -151,6 +153,7 @@ public class PaxosServer {
             if (state.addCheckpoint(sequenceNumber, snapshot)) {
                 if (isLeader()) messageSender.broadcastCheckpoint(state.getLatestCheckpointMessage());
             }
+            state.setApplyingCheckpoint(false);
         } catch (Exception e) {
             logger.error("Error adding and sending checkpoint for sequence number {}: ", sequenceNumber, e);
         }
@@ -158,6 +161,42 @@ public class PaxosServer {
 
     public long getLatestCheckpointedSeqNum() {
         return state.getLatestCheckpointedSeqNum();
+    }
+
+    public ServerMessage<CheckpointMessage> getCheckpointMessage(long seqNum) {
+        return state.getCheckpointMessage(seqNum);
+    }
+
+    public void acceptLatestCheckpointSeqSeen() {
+        executorManager.submitMessageProcessing(() -> {
+            try {
+                long seqNum = state.getLatestCheckpointSeqSeen();
+                if (state.getLatestCheckpointedSeqNum() < seqNum) {
+                    ServerMessage<CheckpointRequest> checkpointRequest = new ServerMessage<>(CheckpointRequest.newBuilder().
+                            setSequenceNumber(seqNum)
+                            .build());
+                    StreamObserver<CheckpointMessage> responseObserver = new StreamObserver<CheckpointMessage>() {
+                        @Override
+                        public void onNext(CheckpointMessage checkpointMessage) {
+                            ServerMessage<CheckpointMessage> message = new ServerMessage<>(checkpointMessage);
+                            logger.info("Received checkpoint message in response to checkpoint request : {}", message);
+                            handleCheckpoint(message);
+                        }
+
+                        @Override
+                        public void onError(Throwable throwable) {
+                            logger.error("Error in receiving checkpoint message");
+                        }
+
+                        @Override
+                        public void onCompleted() {}
+                    };
+                    messageSender.broadcastCheckpointRequest(checkpointRequest, responseObserver);
+                }
+            } catch (Exception e) {
+                logger.error("Error processing latest checkpoint sequence number seen");
+            }
+        });
     }
 
     public void onNewClientRequest(ServerMessage<ClientRequest> request) {
@@ -189,6 +228,7 @@ public class PaxosServer {
 
     public void triggerNewView(org.example.state.Ballot newBallot) {
         if (state.checkBallotAndTransitionToLeader(newBallot)) {
+            acceptLatestCheckpointSeqSeen();
             promiseTimer.stop();
             ServerMessage<NewViewMessage> newView = new ServerMessage<>(state.getNewView());
             tpcHooks.onPaxosNewView(newView); // refactor to be directly called from the operationLog loop

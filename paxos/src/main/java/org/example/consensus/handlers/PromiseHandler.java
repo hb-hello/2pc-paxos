@@ -42,6 +42,8 @@ public class PromiseHandler {
             state.commitRequest(new ServerMessage<>(msg));
         }
 
+        state.setLatestCheckpointSeqSeen(promise.payload().getLatestCheckpointSeq());
+
         if (state.trackMessageWithConsensus(promise, Config.getQuorumSize() - 1)) {
             Ballot ballot = new Ballot(promise.payload().getBallot());
             logger.info("Promise messages have reached a quorum of {} for ballot {}",

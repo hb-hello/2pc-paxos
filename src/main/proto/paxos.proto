@@ -15,6 +15,7 @@ service PaxosService {
   rpc Commit (CommitMessage) returns (google.protobuf.Empty) {};
   rpc ForwardClientRequest (ClientRequest) returns (google.protobuf.Empty) {};
   rpc Checkpoint (CheckpointMessage) returns (google.protobuf.Empty) {};
+  rpc RequestCheckpoint (CheckpointRequest) returns (CheckpointMessage) {};
 
   rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {};
 }
@@ -33,7 +34,8 @@ message PromiseMessage {
   Ballot ballot = 1;
   repeated AcceptMessage accept_log = 2;
   repeated CommitMessage commit_log = 3;
-  int32 sender_id = 4;
+  int64 latest_checkpoint_seq = 4;
+  int32 sender_id = 5;
 }
 
 // Accept phase
@@ -63,6 +65,7 @@ message NewViewMessage {
   Ballot ballot = 1;
   repeated AcceptMessage accept_log = 2;
   repeated CommitMessage commit_log = 3;
+  int64 latest_checkpoint_seq = 4;
 }
 
 // Commit phase
@@ -76,4 +79,8 @@ message CommitMessage {
 message CheckpointMessage {
   int64 sequence_number = 1;
   string state = 2;
+}
+
+message CheckpointRequest {
+  int64 sequence_number = 1;
 }

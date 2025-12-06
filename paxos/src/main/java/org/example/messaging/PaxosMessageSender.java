@@ -64,4 +64,12 @@ public class PaxosMessageSender extends MessageSender {
             stubManager.getPaxosStub(serverId).checkpoint(message.payload());
         }
     }
+
+    public void broadcastCheckpointRequest(ServerMessage<CheckpointRequest> message, StreamObserver<CheckpointMessage> responseObserver) {
+        ensureActive();
+        logger.info("Broadcasting checkpoint request for seq {}", message.payload().getSequenceNumber());
+        for (int serverId : Config.getServerIdsInClusterExcept(nodeId)) {
+            stubManager.getPaxosAsyncStub(serverId).requestCheckpoint(message.payload(), responseObserver);
+        }
+    }
 }

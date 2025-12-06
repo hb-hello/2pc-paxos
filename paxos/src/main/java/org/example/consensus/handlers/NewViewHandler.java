@@ -17,10 +17,12 @@ public class NewViewHandler {
 
     private final PaxosState state;
     private final LivenessTimer promiseTimer;
+    private final Runnable onCheckpointSeen;
 
-    public NewViewHandler(PaxosState state, LivenessTimer promiseTimer) {
+    public NewViewHandler(PaxosState state, LivenessTimer promiseTimer, Runnable onCheckpointSeen) {
         this.state = state;
         this.promiseTimer = promiseTimer;
+        this.onCheckpointSeen = onCheckpointSeen;
     }
 
     public void handle(ServerMessage<NewViewMessage> newViewMessage, StreamObserver<AcceptedMessage> responseObserver) {
@@ -29,6 +31,11 @@ public class NewViewHandler {
 
         if (state.checkBallotAndTransitionToBackup(newViewBallot)) {
             promiseTimer.stop();
+
+            long checkpointSeqNum = newView.getLatestCheckpointSeq();
+            state.setLatestCheckpointSeqSeen(checkpointSeqNum);
+            onCheckpointSeen.run();
+
             for (AcceptMessage acceptMessage : newView.getAcceptLogList()) {
                 if (state.acceptRequest(new ServerMessage<>(acceptMessage))) {
                     AcceptedMessage acceptedMessage = AcceptedMessage.newBuilder()

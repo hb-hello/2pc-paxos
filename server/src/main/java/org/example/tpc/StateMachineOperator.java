@@ -529,6 +529,7 @@ public class StateMachineOperator {
         CompletableFuture<Void> f = new CompletableFuture<>();
         stateMachineExecutor.execute(() -> {
             try {
+                if (getLastCheckpointedSeqNum.call() >= seqNum) f.complete(null);
                 stateMachine.applySnapshot(stateSnapshot);
                 logger.info("Applied checkpoint snapshot to state machine");
                 onCheckpoint.accept(seqNum, stateSnapshot);

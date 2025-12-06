@@ -11,6 +11,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 public class PaxosState {
@@ -26,6 +28,8 @@ public class PaxosState {
     private final OperationLog operationLog;
     private final ServerMessageTracker messageTracker;
     private final CheckpointManager checkpointManager;
+    private AtomicLong latestCheckpointSeqSeen;
+    private AtomicBoolean applyingCheckpoint;
 
     private boolean sentPrepare = false;
     private final Runnable onRoleChangeToBackup;
@@ -40,6 +44,8 @@ public class PaxosState {
         this.checkpointManager = new CheckpointManager();
         this.operationLog = new OperationLog(onNewClientRequest, checkpointManager, metricsListener);
         this.onRoleChangeToBackup = onRoleChangeToBackup;
+        this.latestCheckpointSeqSeen = new AtomicLong(0L);
+        this.applyingCheckpoint = new AtomicBoolean(false);
     }
 
     // Core scheduling helpers
@@ -281,5 +287,27 @@ public class PaxosState {
 
     public ServerMessage<CheckpointMessage> getLatestCheckpointMessage() {
         return new ServerMessage<>(checkpointManager.getLatestCheckpointMessage());
+    }
+
+    public ServerMessage<CheckpointMessage> getCheckpointMessage(long seqNum) {
+        return new ServerMessage<>(checkpointManager.getCheckpointMessage(seqNum));
+    }
+
+    public void setLatestCheckpointSeqSeen(long seqNum) {
+        runSync(() -> {
+            if (latestCheckpointSeqSeen.get() < seqNum) this.latestCheckpointSeqSeen.set(seqNum);
+        });
+    }
+
+    public long getLatestCheckpointSeqSeen() {
+        return latestCheckpointSeqSeen.get();
+    }
+
+    public void setApplyingCheckpoint(boolean flag) {
+        applyingCheckpoint.set(flag);
+    }
+
+    public boolean getApplyingCheckpoint() {
+        return applyingCheckpoint.get();
     }
 }
