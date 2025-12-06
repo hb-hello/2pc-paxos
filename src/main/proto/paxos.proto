@@ -75,10 +75,5 @@ message CommitMessage {
 
 message CheckpointMessage {
   int64 sequence_number = 1;
-  bytes state_digest = 2;
-}
-
-message StateMessage {
-  int64 sequence_number = 1;
   string state = 2;
 }

@@ -45,6 +45,9 @@ public final class MessageIndexHelper {
         if (msg instanceof NewViewMessage pm) {
             messageIndex = pm.getBallot().getInstance() + ":" + pm.getBallot().getSenderId();
         }
+        if (msg instanceof CheckpointMessage cm) {
+            messageIndex = String.valueOf(cm.getSequenceNumber());
+        }
         if (msg instanceof TPCPrepareMessage m) {
             messageIndex = clientRequestIndex(m.getClientRequest());
         }

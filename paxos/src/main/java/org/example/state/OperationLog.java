@@ -3,6 +3,7 @@ package org.example.state;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
+import org.example.config.Config;
 import org.example.messaging.ServerMessage;
 import org.example.metrics.MetricsListener;
 
@@ -19,13 +20,13 @@ public class OperationLog {
     private final EnumMap<OperationStatus, Integer> STATUS_ORDER;
     private final ConcurrentMap<Long, OperationLogEntry> entries;
     private final AtomicLong nextSeqNum;
-    private final AtomicLong lastCheckpointSeqNum;
 
     private final Consumer<ServerMessage<ClientRequest>> onNewClientRequest;
 
+    private final CheckpointManager checkpointManager;
     private final MetricsListener metricsListener;
 
-    public OperationLog(Consumer<ServerMessage<ClientRequest>> onNewClientRequest, MetricsListener metricsListener) {
+    public OperationLog(Consumer<ServerMessage<ClientRequest>> onNewClientRequest, CheckpointManager checkpointManager, MetricsListener metricsListener) {
         this.STATUS_ORDER = new EnumMap<>(OperationStatus.class);
         STATUS_ORDER.put(OperationStatus.NONE, 0);
         STATUS_ORDER.put(OperationStatus.ACCEPTED, 1);
@@ -35,10 +36,10 @@ public class OperationLog {
 
         this.entries = new ConcurrentHashMap<>();
         this.nextSeqNum = new AtomicLong(1L);
-        this.lastCheckpointSeqNum = new AtomicLong(0L);
 
         this.onNewClientRequest = onNewClientRequest;
 
+        this.checkpointManager = checkpointManager;
         this.metricsListener = metricsListener;
     }
 
@@ -56,6 +57,13 @@ public class OperationLog {
 
     public long addOperationWithStatus(ServerMessage<ClientRequest> request, Ballot ballot, OperationStatus status, Phase phase) {
         long seq = nextSeqNum.getAndIncrement();
+
+        // Reject if seq is at or below the latest checkpoint
+        long latestCp = checkpointManager.getLatestCheckpointedSeqNum();
+        if (seq <= latestCp) {
+            logger.warn("Rejecting addOperationWithStatus: seqNum {} <= latestCheckpoint {}", seq, latestCp);
+            return -1L;
+        }
 
         OperationLogEntry entry = new OperationLogEntry(
                 request,
@@ -75,20 +83,36 @@ public class OperationLog {
     }
 
     public ServerMessage<ClientRequest> getRequest(long seqNum) {
+        // Reject if seqNum is at or below the latest checkpoint
+        if (seqNum <= checkpointManager.getLatestCheckpointedSeqNum()) {
+            return null;
+        }
         OperationLogEntry entry = entries.get(seqNum);
         return (entry != null) ? entry.request() : null;
     }
 
     public OperationLogEntry getEntry(long seqNum) {
+        // Reject if seqNum is at or below the latest checkpoint
+        if (seqNum <= checkpointManager.getLatestCheckpointedSeqNum()) {
+            return null;
+        }
         return entries.get(seqNum);
     }
 
     public OperationStatus getStatus(long seqNum) {
+        // Reject if seqNum is at or below the latest checkpoint
+        if (seqNum <= checkpointManager.getLatestCheckpointedSeqNum()) {
+            return null;
+        }
         OperationLogEntry entry = entries.get(seqNum);
         return (entry != null) ? entry.status() : OperationStatus.NONE;
     }
 
     public boolean advanceStatus(long seqNum, OperationStatus newStatus) {
+        // Reject if seqNum is at or below the latest checkpoint
+        if (seqNum <= checkpointManager.getLatestCheckpointedSeqNum()) {
+            return false;
+        }
         OperationLogEntry result = entries.computeIfPresent(seqNum, (k, oldEntry) -> {
             OperationStatus current = oldEntry.status();
             // Do not go backwards or stay the same
@@ -109,6 +133,10 @@ public class OperationLog {
     public boolean compareAndSetStatus(long seqNum,
                                        OperationStatus expected,
                                        OperationStatus newStatus) {
+        // Reject if seqNum is at or below the latest checkpoint
+        if (seqNum <= checkpointManager.getLatestCheckpointedSeqNum()) {
+            return false;
+        }
         OperationLogEntry result = entries.computeIfPresent(seqNum, (k, oldEntry) -> {
             if (oldEntry.status() != expected) {
                 return oldEntry; // no change
@@ -140,6 +168,11 @@ public class OperationLog {
                                           Ballot ballot,
                                           OperationStatus status,
                                           Phase phase) {
+        // Reject if seqNum is at or below the latest checkpoint
+        if (seqNum <= checkpointManager.getLatestCheckpointedSeqNum()) {
+            logger.warn("Rejecting setOperationWithStatus: seqNum {} <= latestCheckpoint", seqNum);
+            return false;
+        }
         AtomicBoolean updated = new AtomicBoolean(false);
         AtomicBoolean newRequest = new AtomicBoolean(false);
         entries.compute(seqNum, (k, oldEntry) -> {
@@ -188,7 +221,7 @@ public class OperationLog {
         if (seqNum <= 0) {
             return;
         }
-        for (long i = Math.max(1L, lastCheckpointSeqNum.get()); i <= seqNum; i++) {
+        for (long i = Math.max(1L, checkpointManager.getLatestCheckpointedSeqNum() - Config.getCheckpointInterval()); i <= seqNum; i++) {
             entries.computeIfPresent(i, (k, oldEntry) -> {
                 if (oldEntry.status() == OperationStatus.CHECKPOINTED) {
                     return oldEntry;
@@ -200,15 +233,15 @@ public class OperationLog {
                         oldEntry.phase()
                 );
             });
+            nextSeqNum.set(Math.max(nextSeqNum.get(), seqNum + 1));
         }
-        lastCheckpointSeqNum.updateAndGet(prev -> Math.max(prev, seqNum));
     }
 
     public PromiseMessage getPromiseMessageWithLogs() {
 
         PromiseMessage.Builder promiseBuilder = PromiseMessage.newBuilder();
 
-        for (long i = Math.max(1L, lastCheckpointSeqNum.get()); i < nextSeqNum.get(); i++) {
+        for (long i = Math.max(1L, checkpointManager.getLatestCheckpointedSeqNum()); i < nextSeqNum.get(); i++) {
             OperationLogEntry entry = entries.get(i);
             OperationStatus status = entry.status();
             org.example.Ballot ballot = entry.ballot().toProto();
@@ -240,7 +273,7 @@ public class OperationLog {
 
         NewViewMessage.Builder newViewBuilder = NewViewMessage.newBuilder();
 
-        for (long i = Math.max(1L, lastCheckpointSeqNum.get()); i < nextSeqNum.get(); i++) {
+        for (long i = Math.max(1L, checkpointManager.getLatestCheckpointedSeqNum()); i < nextSeqNum.get(); i++) {
             OperationLogEntry entry = entries.get(i);
             OperationStatus status = entry.status();
             org.example.Ballot ballot = entry.ballot().toProto();

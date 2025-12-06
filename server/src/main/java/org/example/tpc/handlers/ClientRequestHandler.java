@@ -51,9 +51,13 @@ public class ClientRequestHandler {
             logger.info("Received duplicate client request {}. Checking for stored reply.", request.getMessageId());
             ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(request);
             if (replyMessage != null) {
-                logger.info("Found stored reply for duplicate client request {}. Resending reply.", request.getMessageId());
-                messageSender.sendClientReply(replyMessage);
-                return;
+                try {
+                    logger.info("Found stored reply for duplicate client request {}. Resending reply.", request.getMessageId());
+                    messageSender.sendClientReply(replyMessage);
+                    return;
+                } catch (Exception e) {
+                    logger.error("Error resending stored reply for client request {}: {}", request.getMessageId(), e.getMessage());
+                }
             }
             logger.info("No stored reply found for duplicate client request {}. Ignoring request.", request.getMessageId());
             return;
@@ -119,7 +123,11 @@ public class ClientRequestHandler {
                             : result.getSuccess()
             );
 
-            messageSender.sendClientReply(new ServerMessage<>(reply));
+            try {
+                messageSender.sendClientReply(new ServerMessage<>(reply));
+            } catch (Exception e) {
+                logger.error("Error sending client reply for read-only request {}: {}", request, e.getMessage());
+            }
 
         } catch (Exception e) {
             logger.error("Error executing client request {}: {}", request, e.getMessage());

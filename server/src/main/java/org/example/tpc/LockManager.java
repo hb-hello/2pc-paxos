@@ -15,6 +15,9 @@ public class LockManager {
     // accountId -> owning transactionId
     private final ConcurrentMap<Integer, String> locks = new ConcurrentHashMap<>();
 
+    // Set of all transaction IDs that currently hold at least one lock
+    private final Set<String> transactionsWithLocks = ConcurrentHashMap.newKeySet();
+
     /**
      * Try to acquire a lock on accountId for txId.
      * Returns true if:
@@ -27,6 +30,7 @@ public class LockManager {
 
         String existing = locks.putIfAbsent(accountId, txId);
         if (existing == null) {
+            transactionsWithLocks.add(txId);
             return true;
         }
         return existing.equals(txId);
@@ -38,7 +42,14 @@ public class LockManager {
      */
     public boolean releaseLock(int accountId, String txId) {
         Objects.requireNonNull(txId, "txId must not be null");
-        return locks.remove(accountId, txId);
+        boolean removed = locks.remove(accountId, txId);
+        if (removed) {
+            // Check if this txId still holds any other locks
+            if (!locks.containsValue(txId)) {
+                transactionsWithLocks.remove(txId);
+            }
+        }
+        return removed;
     }
 
     /**
@@ -151,6 +162,7 @@ public class LockManager {
     public void releaseAllForTransaction(String txId) {
         Objects.requireNonNull(txId, "txId must not be null");
         locks.entrySet().removeIf(e -> txId.equals(e.getValue()));
+        transactionsWithLocks.remove(txId);
     }
 
     /**
@@ -164,11 +176,20 @@ public class LockManager {
     }
 
     /**
+     * Check if any locks are held by the given transaction.
+     */
+    public boolean hasLocks(String txId) {
+        Objects.requireNonNull(txId, "txId must not be null");
+        return transactionsWithLocks.contains(txId);
+    }
+
+    /**
      * Release all currently held locks on this node.
      * Intended to be called when the node transitions to a backup role
      * and should not own any application-level locks.
      */
     public void releaseAllLocks() {
         locks.clear();
+        transactionsWithLocks.clear();
     }
 }

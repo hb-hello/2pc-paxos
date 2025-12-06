@@ -35,4 +35,12 @@ public interface TPCHooks {
      * replying to clients, etc.
      */
     void onPaxosCommit(ServerMessage<CommitMessage> commitMessage);
+
+    /**
+     * Apply a checkpoint snapshot to the state machine.
+     *
+     * @param seqNum   the sequence number of the checkpoint
+     * @param snapshot the checkpoint snapshot string
+     */
+    void applyCheckpoint(long seqNum, String snapshot);
 }

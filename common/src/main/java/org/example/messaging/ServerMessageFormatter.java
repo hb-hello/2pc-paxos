@@ -25,6 +25,8 @@ public final class ServerMessageFormatter {
             return formatClientRequest(m);
         } else if (msg instanceof ClientReply m) {
             return formatClientReply(m);
+        } else if (msg instanceof CheckpointMessage m) {
+            return formatCheckpoint(m);
         } else if (msg instanceof TPCPrepareMessage m) {
             return formatTPCPrepare(m);
         } else if (msg instanceof TPCPreparedMessage m) {
@@ -89,6 +91,10 @@ public final class ServerMessageFormatter {
                 ", phase=" + m.getPhase().name() +
                 ", txId=" + txIDFromRequest(m.getRequest()) +
                 "}";
+    }
+
+    private static String formatCheckpoint(CheckpointMessage m) {
+        return "Checkpoint{seq=" + m.getSequenceNumber() + "}";
     }
 
     private static String formatClientRequest(ClientRequest m) {

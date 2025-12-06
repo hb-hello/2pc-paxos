@@ -295,9 +295,9 @@ public class ClientNode {
 
     private void handleFail(NodeId nodeId) {
         try {
-            Thread.sleep(50);
+            Thread.sleep(100);
             messageSender.failNode(nodeId);
-            Thread.sleep(50);
+            Thread.sleep(100);
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }

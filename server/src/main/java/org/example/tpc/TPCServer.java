@@ -62,12 +62,17 @@ public class TPCServer implements TPCHooks {
         this.cliServiceServer = cliServiceServer;
         this.clientService = new ClientService(this);
 
-        this.operator = new StateMachineOperator(serverId,
+        this.operator = new StateMachineOperator(
+                serverId,
                 executorManager.getStateMachineExecutor(),
                 database,
                 paxosServer.getOperationLog(),
                 clientRequestTracker,
-                this::releaseLocksAndSendReply);
+                this::releaseLocksAndSendReply,
+                paxosServer::getLatestCheckpointedSeqNum,
+                paxosServer::addAndSendCheckpoint,
+                lockManager::hasLocks
+        );
 
         // this will perform warmup
         this.messageSender = new TPCMessageSender(serverId, executorManager.getNetworkExecutor());
@@ -163,31 +168,39 @@ public class TPCServer implements TPCHooks {
             releaseLocks(requestId);
             paxosServer.refreshTimerOnExecute(requestId, lockManager.hasAnyLocks());
             clientRequestTracker.markCommitted(requestId);
-            if (paxosServer.isLeader()) {
-                ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(requestId);
-                if (replyMessage != null) {
-                    messageSender.sendClientReply(replyMessage);
-                } else {
-                    logger.error("No reply found for committed request {}", requestId);
+            try {
+                if (paxosServer.isLeader()) {
+                    ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(requestId);
+                    if (replyMessage != null) {
+                        messageSender.sendClientReply(replyMessage);
+                    } else {
+                        logger.error("No reply found for committed request {}", requestId);
+                    }
+                    if (!lockManager.hasAnyLocks()) executorManager.submitMessageProcessing(this::processPendingClientRequestsAsLeader);
                 }
-                if (!lockManager.hasAnyLocks()) executorManager.submitMessageProcessing(this::processPendingClientRequestsAsLeader);
+            } catch (Exception e) {
+                logger.error("Error while sending client reply for request {}: {}", requestId, e.getMessage());
             }
         }
     }
 
     public void sendPrepare(ServerMessage<ClientRequest> request) {
-        int otherClusterIndex = clientRequestTracker.getOtherClusterIndex(request);
+        try {
+            int otherClusterIndex = clientRequestTracker.getOtherClusterIndex(request);
 
-        if (otherClusterIndex != -1) {
-            int otherClusterLeaderId = leaderMap.get(otherClusterIndex);
-            TPCPrepareMessage tpcPrepareMessage = TPCPrepareMessage.newBuilder()
-                    .setClientRequest(request.payload())
-                    .setSenderId(serverId)
-                    .build();
-            messageSender.sendPrepare(otherClusterLeaderId, new ServerMessage<>(tpcPrepareMessage));
-            tpcTimer.start(request);
-        } else
-            logger.error("No other cluster index found while sending prepare for request {}", request.getMessageId());
+            if (otherClusterIndex != -1) {
+                int otherClusterLeaderId = leaderMap.get(otherClusterIndex);
+                TPCPrepareMessage tpcPrepareMessage = TPCPrepareMessage.newBuilder()
+                        .setClientRequest(request.payload())
+                        .setSenderId(serverId)
+                        .build();
+                messageSender.sendPrepare(otherClusterLeaderId, new ServerMessage<>(tpcPrepareMessage));
+                tpcTimer.start(request);
+            } else
+                logger.error("No other cluster index found while sending prepare for request {}", request.getMessageId());
+        } catch (Exception e) {
+            logger.error("Error while sending prepare for request {}: {}", request.getMessageId(), e.getMessage());
+        }
     }
 
     private void markCommittedAndSend(ServerMessage<ClientRequest> request) {
@@ -307,6 +320,11 @@ public class TPCServer implements TPCHooks {
         retryManager.shutdown();
         lockManager.releaseAllLocks();
         processPendingClientRequestsAsBackup();
+    }
+
+    @Override
+    public void applyCheckpoint(long seqNum, String snapshot) {
+        operator.applyCheckpoint(seqNum, snapshot);
     }
 
     public void reset() {

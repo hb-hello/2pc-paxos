@@ -25,6 +25,7 @@ public class PaxosState {
     private Role role;
     private final OperationLog operationLog;
     private final ServerMessageTracker messageTracker;
+    private final CheckpointManager checkpointManager;
 
     private boolean sentPrepare = false;
     private final Runnable onRoleChangeToBackup;
@@ -35,8 +36,9 @@ public class PaxosState {
         this.ballot = new Ballot(0, serverId);
         this.leaderId = -1; // No leader initially
         this.role = Role.CANDIDATE;
-        this.operationLog = new OperationLog(onNewClientRequest, metricsListener);
         this.messageTracker = new ServerMessageTracker();
+        this.checkpointManager = new CheckpointManager();
+        this.operationLog = new OperationLog(onNewClientRequest, checkpointManager, metricsListener);
         this.onRoleChangeToBackup = onRoleChangeToBackup;
     }
 
@@ -261,5 +263,23 @@ public class PaxosState {
 
     public String printOperationLog() {
         return operationLog.printLog();
+    }
+
+    public boolean addCheckpoint(long seqNum, String snapshot) {
+        logger.info("Server {} attempting to add checkpoint at seqNum {}", serverId, seqNum);
+        if (checkpointManager.addCheckpoint(seqNum, snapshot)) {
+            operationLog.markCheckpointed(seqNum);
+            logger.info("Server {} added checkpoint at seqNum {}", serverId, seqNum);
+            return true;
+        }
+        return false;
+    }
+
+    public long getLatestCheckpointedSeqNum() {
+        return checkpointManager.getLatestCheckpointedSeqNum();
+    }
+
+    public ServerMessage<CheckpointMessage> getLatestCheckpointMessage() {
+        return new ServerMessage<>(checkpointManager.getLatestCheckpointMessage());
     }
 }

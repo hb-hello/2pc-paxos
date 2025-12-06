@@ -18,33 +18,39 @@ public class TPCMessageSender extends MessageSender {
     }
 
     public void sendPrepare(int targetNodeId, ServerMessage<TPCPrepareMessage> prepare) {
+        ensureActive();
         logger.info("Sending TPC Prepare to node {} : {}", targetNodeId, prepare);
         stubManager.getTPCStub(targetNodeId).tPCPrepare(prepare.payload());
     }
 
     public void sendCommit(int targetNodeId, ServerMessage<TPCCommitMessage> commit, StreamObserver<TPCAckMessage> responseObserver) {
+        ensureActive();
         logger.info("Sending TPC Commit to node {} : {}", targetNodeId, commit);
         stubManager.getTPCAsyncStub(targetNodeId).withDeadlineAfter(Config.getServerTimeoutMillis(), TimeUnit.MILLISECONDS).tPCCommit(commit.payload(), responseObserver);
     }
 
     public void broadcastCommitToCluster(int targetNodeId, ServerMessage<TPCCommitMessage> commit, StreamObserver<TPCAckMessage> observer) {
+        ensureActive();
         for (int nodeId : Config.getServerIdsInCluster(Config.getServerClusterIndex(targetNodeId))) {
             sendCommit(nodeId, commit, observer);
         }
     }
 
     public void sendAbort(int targetNodeId, ServerMessage<TPCAbortMessage> abort, StreamObserver<TPCAckMessage> responseObserver) {
+        ensureActive();
         logger.info("Sending TPC Abort to node {} : {}", targetNodeId, abort);
         stubManager.getTPCAsyncStub(targetNodeId).withDeadlineAfter(Config.getServerTimeoutMillis(), TimeUnit.MILLISECONDS).tPCAbort(abort.payload(), responseObserver);
     }
 
     public void broadcastAbortToCluster(int targetNodeId, ServerMessage<TPCAbortMessage> abort, StreamObserver<TPCAckMessage> observer) {
+        ensureActive();
         for (int nodeId : Config.getServerIdsInCluster(Config.getServerClusterIndex(targetNodeId))) {
             sendAbort(nodeId, abort, observer);
         }
     }
 
     public void sendClientReply(ServerMessage<ClientReply> reply) {
+        ensureActive();
         logger.info("Sending Client Reply : {}", reply);
         stubManager.getClientStub(0).reply(reply.payload());
     }

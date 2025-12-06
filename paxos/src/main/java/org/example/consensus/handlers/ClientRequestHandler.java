@@ -26,12 +26,16 @@ public class ClientRequestHandler {
 //        logger.info("Handling client request: {}", request.getMessageId());
 
         state.runSync(() -> {
-            if (state.isBackup()) {
-                executorManager.submitMessageProcessing(() -> messageSender.forwardClientRequest(state.getLeaderId(), request));
-            } else if (state.isCandidate()) {
-                if (!state.hasSentPrepare()) {
-                    leaderInitiationCallback.run();
+            try {
+                if (state.isBackup()) {
+                    executorManager.submitMessageProcessing(() -> messageSender.forwardClientRequest(state.getLeaderId(), request));
+                } else if (state.isCandidate()) {
+                    if (!state.hasSentPrepare()) {
+                        leaderInitiationCallback.run();
+                    }
                 }
+            } catch (Exception e) {
+                logger.error("Error handling client request: {}", e.getMessage(), e);
             }
         });
     }

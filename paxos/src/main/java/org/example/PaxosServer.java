@@ -142,6 +142,24 @@ public class PaxosServer {
         executorManager.submitMessageProcessing(() -> commitHandler.handle(commitMessage));
     }
 
+    public void handleCheckpoint(ServerMessage<CheckpointMessage> checkpointMessage) {
+        tpcHooks.applyCheckpoint(checkpointMessage.payload().getSequenceNumber(), checkpointMessage.payload().getState());
+    }
+
+    public void addAndSendCheckpoint(long sequenceNumber, String snapshot) {
+        try {
+            if (state.addCheckpoint(sequenceNumber, snapshot)) {
+                if (isLeader()) messageSender.broadcastCheckpoint(state.getLatestCheckpointMessage());
+            }
+        } catch (Exception e) {
+            logger.error("Error adding and sending checkpoint for sequence number {}: ", sequenceNumber, e);
+        }
+    }
+
+    public long getLatestCheckpointedSeqNum() {
+        return state.getLatestCheckpointedSeqNum();
+    }
+
     public void onNewClientRequest(ServerMessage<ClientRequest> request) {
         tpcHooks.onNewClientRequest(request);
     }
@@ -157,8 +175,12 @@ public class PaxosServer {
                         .setBallot(ballot)
                         .build();
                 executorManager.submitMessageProcessing(() -> {
-                    messageSender.broadcastPrepare(new ServerMessage<>(prepareMessage), promiseHandler.handler());
-                    promiseTimer.restart("initiating leader election for ballot: " + state.getBallot());
+                    try {
+                        messageSender.broadcastPrepare(new ServerMessage<>(prepareMessage), promiseHandler.handler());
+                        promiseTimer.restart("initiating leader election for ballot: " + state.getBallot());
+                    } catch (Exception e) {
+                        logger.error("Error broadcasting prepare messages during leader election: ", e);
+                    }
                 });
                 state.setSentPrepare(true);
             });
@@ -170,8 +192,12 @@ public class PaxosServer {
             promiseTimer.stop();
             ServerMessage<NewViewMessage> newView = new ServerMessage<>(state.getNewView());
             tpcHooks.onPaxosNewView(newView); // refactor to be directly called from the operationLog loop
-            messageSender.broadcastNewView(newView, acceptedHandler.handler());
-            executorManager.submitMessageProcessing(tpcHooks::onRoleChangeToLeader);
+            try {
+                messageSender.broadcastNewView(newView, acceptedHandler.handler());
+                executorManager.submitMessageProcessing(tpcHooks::onRoleChangeToLeader);
+            } catch (Exception e) {
+                logger.error("Error broadcasting new view messages during leader election: ", e);
+            }
             leaderElectionInProgress.set(false);
         }
     }
@@ -180,14 +206,18 @@ public class PaxosServer {
         long seqNum = state.acceptRequest(request, phase);
         if (seqNum == -1L) return; // not leader anymore
         clientRequestTimer.startIfNotRunning("handling client request to trigger accept : " + request.getMessageId());
-        if (state.isLeader()) {
-            AcceptMessage acceptMessage = AcceptMessage.newBuilder()
-                    .setSequenceNumber(seqNum)
-                    .setBallot(state.getBallot().toProto())
-                    .setPhase(phase)
-                    .setRequest(request.payload())
-                    .build();
-            messageSender.broadcastAccept(new ServerMessage<>(acceptMessage), acceptedHandler.handler());
+        try {
+            if (state.isLeader()) {
+                AcceptMessage acceptMessage = AcceptMessage.newBuilder()
+                        .setSequenceNumber(seqNum)
+                        .setBallot(state.getBallot().toProto())
+                        .setPhase(phase)
+                        .setRequest(request.payload())
+                        .build();
+                messageSender.broadcastAccept(new ServerMessage<>(acceptMessage), acceptedHandler.handler());
+            }
+        } catch (Exception e) {
+            logger.error("Error broadcasting accept messages: ", e);
         }
     }
 
@@ -195,34 +225,46 @@ public class PaxosServer {
         if (!state.acceptRequestWithSeqNum(request, phase, seqNum)) return;
         promiseTimer.stop();
         clientRequestTimer.startIfNotRunning("handling client request to trigger accept for commit phase : " + request.getMessageId());
-        if (state.isLeader()) {
-            AcceptMessage acceptMessage = AcceptMessage.newBuilder()
-                    .setSequenceNumber(seqNum)
-                    .setBallot(state.getBallot().toProto())
-                    .setPhase(phase)
-                    .setRequest(request.payload())
-                    .build();
-            messageSender.broadcastAccept(new ServerMessage<>(acceptMessage), acceptedHandler.handler());
+        try {
+            if (state.isLeader()) {
+                AcceptMessage acceptMessage = AcceptMessage.newBuilder()
+                        .setSequenceNumber(seqNum)
+                        .setBallot(state.getBallot().toProto())
+                        .setPhase(phase)
+                        .setRequest(request.payload())
+                        .build();
+                messageSender.broadcastAccept(new ServerMessage<>(acceptMessage), acceptedHandler.handler());
+            }
+        } catch (Exception e) {
+            logger.error("Error broadcasting accept messages during commit phase: ", e);
         }
     }
 
     public void triggerCommit(long sequenceNumber) {
-        OperationLogEntry entry = state.getLogEntry(sequenceNumber);
-        CommitMessage commit = CommitMessage.newBuilder()
-                .setSequenceNumber(sequenceNumber)
-                .setBallot(entry.ballot().toProto())
-                .setPhase(entry.phase())
-                .setRequest(entry.request().payload())
-                .build();
-        ServerMessage<CommitMessage> commitMessage = new ServerMessage<>(commit);
-        executorManager.submitMessageProcessing(() -> triggerCommit(commitMessage));
+        try {
+            OperationLogEntry entry = state.getLogEntry(sequenceNumber);
+            CommitMessage commit = CommitMessage.newBuilder()
+                    .setSequenceNumber(sequenceNumber)
+                    .setBallot(entry.ballot().toProto())
+                    .setPhase(entry.phase())
+                    .setRequest(entry.request().payload())
+                    .build();
+            ServerMessage<CommitMessage> commitMessage = new ServerMessage<>(commit);
+            executorManager.submitMessageProcessing(() -> triggerCommit(commitMessage));
+        } catch (Exception e) {
+            logger.error("Error triggering commit for sequence number {}: ", sequenceNumber, e);
+        }
     }
 
     public void triggerCommit(ServerMessage<CommitMessage> commitMessage) {
-        if (state.commitRequest(commitMessage)) {
-            promiseTimer.stop();
-            tpcHooks.onPaxosCommit(commitMessage);
-            if (state.isLeader()) messageSender.broadcastCommit(commitMessage);
+        try {
+            if (state.commitRequest(commitMessage)) {
+                promiseTimer.stop();
+                tpcHooks.onPaxosCommit(commitMessage);
+                if (state.isLeader()) messageSender.broadcastCommit(commitMessage);
+            }
+        } catch (Exception e) {
+            logger.error("Error handling commit message {}: ", commitMessage, e);
         }
     }
 

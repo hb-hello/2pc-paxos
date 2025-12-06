@@ -3,6 +3,7 @@ package org.example.tpc;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
+import org.example.config.Config;
 import org.example.messaging.ServerMessage;
 import org.example.persistence.KeyValueStore;
 import org.example.state.OperationLog;
@@ -13,12 +14,10 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
+import java.util.function.Predicate;
 
 public class StateMachineOperator {
     private static final Logger logger = LogManager.getLogger(StateMachineOperator.class);
@@ -30,12 +29,21 @@ public class StateMachineOperator {
     private final OperationLog operationLog;
     private final ClientRequestTracker requestTracker;
     private final BiConsumer<String, Phase> onExecuted;
+    private final Callable<Long> getLastCheckpointedSeqNum;
+    private final BiConsumer<Long, String> onCheckpoint;
+    private final Predicate<String> lockChecker;
 
     // WAL: client request -> before-image of mutated accounts
     private final ConcurrentMap<String, WalEntry> wal = new ConcurrentHashMap<>();
 
     // Local committed flag per client request (2PC decision on this shard)
     private final ConcurrentMap<String, Boolean> committedOrAborted = new ConcurrentHashMap<>();
+
+    // Map from client request ID to sequence number (for checkpoint lookup)
+    private final ConcurrentMap<String, Long> requestIdToSeqNum = new ConcurrentHashMap<>();
+
+    // Highest sequence number for which we've received an ACK and locks have been released
+    private final AtomicLong highestAckReceivedAndLocksReleasedSeqNum = new AtomicLong(0L);
 
     // Next sequence number that should be executed (in-order guarantee)
     private final AtomicLong nextToExecute = new AtomicLong(1L);
@@ -48,13 +56,19 @@ public class StateMachineOperator {
                                 KeyValueStore<Double> database,
                                 OperationLog operationLog,
                                 ClientRequestTracker requestTracker,
-                                BiConsumer<String, Phase> onExecuted) {
+                                BiConsumer<String, Phase> onExecuted,
+                                Callable<Long> getLastCheckpointedSeqNum,
+                                BiConsumer<Long, String> onCheckpoint,
+                                Predicate<String> lockChecker) {
         this.serverId = serverId;
         this.stateMachineExecutor = stateMachineExecutor;
         this.stateMachine = new BankStateMachine(database); // owns the DB-backed state machine
         this.operationLog = operationLog;
         this.requestTracker = requestTracker;
         this.onExecuted = onExecuted;
+        this.getLastCheckpointedSeqNum = getLastCheckpointedSeqNum;
+        this.onCheckpoint = onCheckpoint;
+        this.lockChecker = lockChecker;
     }
 
     // Simple holder for WAL data
@@ -92,6 +106,17 @@ public class StateMachineOperator {
      * on the stateExecutor.
      */
     public CompletableFuture<Void> execute(long seqNum, ExecutionMode mode) {
+
+        try {
+            if (seqNum <= getLastCheckpointedSeqNum.call()) {
+                logger.info("Requested execution up to seqNum {} which is already checkpointed. No execution needed.", seqNum);
+                return CompletableFuture.completedFuture(null);
+            }
+        } catch (Exception e) {
+            logger.error("Error checking last checkpointed seq num", e);
+            CompletableFuture<Void> failedFuture = new CompletableFuture<>();
+        }
+
         logger.info("Scheduling execution up to seqNum {} with mode {}", seqNum, mode);
 
         // Remember the highest target ever requested.
@@ -159,6 +184,18 @@ public class StateMachineOperator {
                 continue;
             }
 
+            try {
+                if (current <= getLastCheckpointedSeqNum.call()) {
+                    logger.info("Skipping execution for seq {} request {} as it is already included in a checkpoint.",
+                            current, requestId);
+                    nextToExecute.incrementAndGet();
+                    continue;
+                }
+            } catch (Exception e) {
+                logger.error("Error checking last checkpointed seq num", e);
+                return;
+            }
+
             WalEntry walEntry = buildWalEntry(request, mode);
             if (walEntry != null) {
                 wal.put(requestId, walEntry);
@@ -190,7 +227,18 @@ public class StateMachineOperator {
             }
 
             nextToExecute.incrementAndGet();
+            // Record the mapping from request ID to sequence number for checkpoint lookup
+            requestIdToSeqNum.put(requestId, current);
             onExecuted.accept(requestId, phase);
+
+            try {
+                if (highestAckReceivedAndLocksReleasedSeqNum.get() <= getLastCheckpointedSeqNum.call() && current % Config.getCheckpointInterval() == 0) {
+                    onCheckpoint.accept(current, stateMachine.snapshot());
+                }
+            } catch (Exception e) {
+                logger.error("Error checking last checkpointed seq num during execution", e);
+                return;
+            }
         }
     }
 
@@ -377,5 +425,127 @@ public class StateMachineOperator {
             case OP_NOT_SET -> throw new IllegalArgumentException("Operation.op not set");
         }
         throw new IllegalStateException("Unhandled opCase: " + operation.getOpCase());
+    }
+
+    /**
+     * Try to trigger a checkpoint when we receive an ACK from a participant cluster in 2PC.
+     * A checkpoint is triggered if:
+     * 1. We have a recorded sequence number for this request
+     * 2. All requests in the interval (highestAckReceivedAndLocksReleasedSeqNum+1 to nextCheckpointTarget)
+     *    have received their ACKs (if cross-shard) and have released their locks
+     *
+     * @param requestMessage the client request for which we received an ACK
+     * @return true if a checkpoint was triggered, false otherwise
+     */
+    public boolean tryCheckpoint(ServerMessage<ClientRequest> requestMessage) {
+        String requestId = requestMessage.getMessageId();
+        Long seqNum = requestIdToSeqNum.get(requestId);
+
+        if (seqNum == null) {
+            logger.warn("No sequence number found for request {} - cannot consider for checkpoint", requestId);
+            return false;
+        }
+
+        int checkpointInterval = Config.getCheckpointInterval();
+
+        long latestCheckpoint;
+        try {
+            latestCheckpoint = getLastCheckpointedSeqNum.call();
+        } catch (Exception e) {
+            logger.error("Error getting last checkpointed seq num for tryCheckpoint", e);
+            return false;
+        }
+
+        // Find the next checkpoint target (the next multiple of checkpointInterval after latestCheckpoint)
+        long nextCheckpointTarget = latestCheckpoint < 0
+                ? checkpointInterval
+                : ((latestCheckpoint / checkpointInterval) + 1) * checkpointInterval;
+
+        // Check all requests in the interval (highestAckReceivedAndLocksReleasedSeqNum+1 to nextCheckpointTarget)
+        // Each request must have:
+        // - ACK received (if cross-shard with SENDER mode)
+        // - Locks released
+        long intervalStart = Math.max(1, highestAckReceivedAndLocksReleasedSeqNum.get() + 1);
+        for (long seq = intervalStart; seq <= nextCheckpointTarget; seq++) {
+            ServerMessage<ClientRequest> req = operationLog.getRequest(seq);
+            if (req == null) {
+                // If we haven't even seen this seq yet, we can't checkpoint
+                logger.debug("Cannot checkpoint at seq {} - request at seq {} not found yet",
+                        nextCheckpointTarget, seq);
+                return false;
+            }
+
+            var entry = operationLog.getEntry(seq);
+            if (entry == null) {
+                logger.debug("Cannot checkpoint at seq {} - entry at seq {} not found in operation log",
+                        nextCheckpointTarget, seq);
+                return false;
+            }
+
+            String reqId = req.getMessageId();
+
+            // Check if locks have been released for this request
+            if (!lockChecker.test(reqId)) {
+                logger.debug("Cannot checkpoint at seq {} - request {} at seq {} still holds locks",
+                        nextCheckpointTarget, reqId, seq);
+                return false;
+            }
+
+            Phase phase = entry.phase();
+            ExecutionMode mode = requestTracker.getExecutionMode(req);
+
+            // For cross-shard requests where we are the sender, check if ACK has been received
+            if (phase != Phase.INTRA_SHARD && mode != ExecutionMode.RECEIVER) {
+                if (!requestTracker.isAckReceived(req)) {
+                    logger.debug("Cannot checkpoint at seq {} - request {} at seq {} (phase={}) has not received ACK yet",
+                            nextCheckpointTarget, reqId, seq, phase);
+                    return false;
+                }
+            }
+
+            // This seq is ready - update highestAckReceivedAndLocksReleasedSeqNum
+            final long currentSeq = seq;
+            highestAckReceivedAndLocksReleasedSeqNum.updateAndGet(prev -> Math.max(prev, currentSeq));
+        }
+
+        logger.info("Triggering checkpoint at seq {} (latestCheckpoint={}, interval={})",
+                nextCheckpointTarget, latestCheckpoint, checkpointInterval);
+        onCheckpoint.accept(nextCheckpointTarget, stateMachine.snapshot());
+        return true;
+    }
+
+    public long getHighestAckReceivedSeqNum() {
+        return highestAckReceivedAndLocksReleasedSeqNum.get();
+    }
+
+    /**
+     * Apply a checkpoint snapshot to restore the state machine state.
+     * This is used during recovery or when catching up from a checkpoint.
+     *
+     * @param stateSnapshot the serialized state snapshot to apply
+     * @return a future that completes when the snapshot has been applied
+     */
+    public CompletableFuture<Void> applyCheckpoint(long seqNum, String stateSnapshot) {
+        CompletableFuture<Void> f = new CompletableFuture<>();
+        stateMachineExecutor.execute(() -> {
+            try {
+                stateMachine.applySnapshot(stateSnapshot);
+                logger.info("Applied checkpoint snapshot to state machine");
+                onCheckpoint.accept(seqNum, stateSnapshot);
+                f.complete(null);
+            } catch (Throwable t) {
+                logger.error("Error applying checkpoint snapshot", t);
+                f.completeExceptionally(t);
+            }
+        });
+        return f;
+    }
+
+    public void registerRequestSeqNum(String requestId, long seqNum) {
+        requestIdToSeqNum.put(requestId, seqNum);
+    }
+
+    public Long getSeqNumForRequest(String requestId) {
+        return requestIdToSeqNum.get(requestId);
     }
 }

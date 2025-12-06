@@ -45,6 +45,12 @@ public class PaxosService extends PaxosServiceGrpc.PaxosServiceImplBase {
         server.handleCommit(message);
     }
 
+    public void checkpoint(CheckpointMessage request, StreamObserver<Empty> responseObserver) {
+        ServerMessage<CheckpointMessage> message = new ServerMessage<>(request);
+        logger.info("Received Checkpoint message: {}", message);
+        server.handleCheckpoint(message);
+    }
+
     @Override
     public void ping(Empty request, StreamObserver<Empty> responseObserver) {
         logger.debug("Received ping request");
