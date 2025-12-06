@@ -130,6 +130,142 @@ public class ClientBenchmark implements ClientMetricsListener {
     }
 
     /**
+     * Build intra-shard transfers with 100% contention using a circular chain pattern.
+     * Each transaction's receiver is the next transaction's sender:
+     * 1→2, 2→3, 3→4, ..., N→1 (loops back to start)
+     * This ensures every account is involved in exactly two consecutive transactions.
+     *
+     * @param accountToClusterIndex mapping of account IDs to their cluster index
+     * @param totalRequests         number of transactions to generate (must be divisible by clusterCount)
+     * @return list of CSV-formatted transactions "sender,receiver,amount"
+     */
+    public static List<String> buildLinearIntraShardTransfers(Map<Integer, Integer> accountToClusterIndex,
+                                                              int totalRequests) {
+        int clusterCount = Config.getServerClusterCount();
+        if (totalRequests % clusterCount != 0) {
+            throw new IllegalArgumentException("totalRequests must be divisible by clusterCount");
+        }
+
+        // Group account IDs by cluster index
+        Map<Integer, List<Integer>> accountsByCluster = new HashMap<>();
+        for (Map.Entry<Integer, Integer> e : accountToClusterIndex.entrySet()) {
+            int accountId = e.getKey();
+            int clusterIdx = e.getValue();
+            accountsByCluster
+                    .computeIfAbsent(clusterIdx, k -> new ArrayList<>())
+                    .add(accountId);
+        }
+
+        // Sort accounts within each cluster for consistent ordering
+        for (List<Integer> accounts : accountsByCluster.values()) {
+            Collections.sort(accounts);
+        }
+
+        int perCluster = totalRequests / clusterCount;
+        ThreadLocalRandom rnd = ThreadLocalRandom.current();
+        List<String> txs = new ArrayList<>(totalRequests);
+
+        for (int clusterIdx = 0; clusterIdx < clusterCount; clusterIdx++) {
+            List<Integer> accounts = accountsByCluster.get(clusterIdx);
+            if (accounts == null || accounts.size() < 2) {
+                throw new IllegalStateException("Not enough accounts in cluster " + clusterIdx);
+            }
+
+            int numAccounts = accounts.size();
+
+            // Build circular chain: accounts[i % n] → accounts[(i+1) % n]
+            for (int i = 0; i < perCluster; i++) {
+                int sender = accounts.get(i % numAccounts);
+                int receiver = accounts.get((i + 1) % numAccounts);
+                double amount = rnd.nextDouble(1.0, 10.0);
+
+                String tx = sender + "," + receiver + "," + String.format(Locale.US, "%.2f", amount);
+                txs.add(tx);
+            }
+        }
+
+        writeTransactionsToFile(txs, "half_contention_transfers_" + System.currentTimeMillis() + ".txt");
+        logger.info("Built {} half-contention intra-shard transfer transactions.", txs.size());
+        return txs;
+    }
+
+    /**
+     * Build intra-shard transfers with configurable skew (contention level).
+     * Skew controls how many accounts are "hot" - higher skew means fewer accounts
+     * handle more transactions, increasing contention.
+     *
+     * @param accountToClusterIndex mapping of account IDs to their cluster index
+     * @param totalRequests         number of transactions to generate (must be divisible by clusterCount)
+     * @param skew                  value between 0.0 and 1.0:
+     *                              0.0 = uniform distribution (no contention, all accounts used)
+     *                              1.0 = maximum skew (only 2 accounts used per cluster)
+     * @return list of CSV-formatted transactions "sender,receiver,amount"
+     */
+    public static List<String> buildIntraShardTransfersWithSkew(Map<Integer, Integer> accountToClusterIndex,
+                                                                int totalRequests,
+                                                                double skew) {
+        if (skew < 0.0 || skew > 1.0) {
+            throw new IllegalArgumentException("skew must be between 0.0 and 1.0");
+        }
+
+        int clusterCount = Config.getServerClusterCount();
+        if (totalRequests % clusterCount != 0) {
+            throw new IllegalArgumentException("totalRequests must be divisible by clusterCount");
+        }
+
+        // Group account IDs by cluster index
+        Map<Integer, List<Integer>> accountsByCluster = new HashMap<>();
+        for (Map.Entry<Integer, Integer> e : accountToClusterIndex.entrySet()) {
+            int accountId = e.getKey();
+            int clusterIdx = e.getValue();
+            accountsByCluster
+                    .computeIfAbsent(clusterIdx, k -> new ArrayList<>())
+                    .add(accountId);
+        }
+
+        // Sort accounts within each cluster for consistent ordering
+        for (List<Integer> accounts : accountsByCluster.values()) {
+            Collections.sort(accounts);
+        }
+
+        int perCluster = totalRequests / clusterCount;
+        ThreadLocalRandom rnd = ThreadLocalRandom.current();
+        List<String> txs = new ArrayList<>(totalRequests);
+
+        for (int clusterIdx = 0; clusterIdx < clusterCount; clusterIdx++) {
+            List<Integer> accounts = accountsByCluster.get(clusterIdx);
+            if (accounts == null || accounts.size() < 2) {
+                throw new IllegalStateException("Not enough accounts in cluster " + clusterIdx);
+            }
+
+            int numAccounts = accounts.size();
+            // Calculate hot account pool size: ranges from numAccounts (skew=0) to 2 (skew=1)
+            int hotPoolSize = Math.max(2, (int) Math.round(numAccounts * (1.0 - skew)));
+
+            for (int i = 0; i < perCluster; i++) {
+                int senderIdx = rnd.nextInt(hotPoolSize);
+                int receiverIdx;
+                do {
+                    receiverIdx = rnd.nextInt(hotPoolSize);
+                } while (receiverIdx == senderIdx);
+
+                int sender = accounts.get(senderIdx);
+                int receiver = accounts.get(receiverIdx);
+                double amount = rnd.nextDouble(1.0, 10.0);
+
+                String tx = sender + "," + receiver + "," + String.format(Locale.US, "%.2f", amount);
+                txs.add(tx);
+            }
+        }
+
+        Collections.shuffle(txs, rnd);
+//        writeTransactionsToFile(txs, "skewed_transfers_" + System.currentTimeMillis() + ".txt");
+        logger.info("Built {} intra-shard transfers with skew={} (hot pool size per cluster: {})",
+                txs.size(), skew, Math.max(2, (int) Math.round(accountsByCluster.values().iterator().next().size() * (1.0 - skew))));
+        return txs;
+    }
+
+    /**
      * Persist a set of transactions to a newline-delimited text file.
      *
      * @param transactions list of CSV-formatted transactions
@@ -204,5 +340,32 @@ public class ClientBenchmark implements ClientMetricsListener {
 
         Collections.shuffle(txs, rnd);
         return txs;
+    }
+
+    public long getCompletedCount() {
+        return completed.sum();
+    }
+
+    public double getElapsedSeconds() {
+        return (endTimeNanos - startTimeNanos) / 1_000_000_000.0;
+    }
+
+    public double getThroughput() {
+        double elapsed = getElapsedSeconds();
+        return elapsed > 0 ? getCompletedCount() / elapsed : 0.0;
+    }
+
+    public double getAvgLatencyMs() {
+        long done = completed.sum();
+        return done > 0 ? totalLatencyMillis.get() / (double) done : 0.0;
+    }
+
+    public long getMinLatencyMs() {
+        long min = minLatencyMillis.get();
+        return min == Long.MAX_VALUE ? 0 : min;
+    }
+
+    public long getMaxLatencyMs() {
+        return maxLatencyMillis.get();
     }
 }

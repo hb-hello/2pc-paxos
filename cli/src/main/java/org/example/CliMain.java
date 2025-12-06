@@ -4,6 +4,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.LoggerContext;
 import org.example.benchmark.ClientBenchmark;
+import org.example.benchmark.ContentionBenchmarkSuite;
 import org.example.client.ClientNode;
 import org.example.client.TransactionSet;
 import org.example.client.TransactionSetLoader;
@@ -25,6 +26,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import static java.lang.Thread.sleep;
 
 public class CliMain {
 
@@ -84,7 +87,7 @@ public class CliMain {
     public void activateAllServers() {
         try {
             System.out.println("Waiting briefly before activating all servers for client warmup...");
-            Thread.sleep(500); // brief pause to ensure any prior operations have settled
+            sleep(500); // brief pause to ensure any prior operations have settled
             for (int i = 1; i <= Config.getServerCount(); i++) {
                 try {
                     cliMessageSender.sendActiveFlag(i, true);
@@ -232,9 +235,7 @@ public class CliMain {
         }
     }
 
-    // In CliMain.java
-
-    private void runBenchmark(int totalRequests) {
+    private void runBenchmark(int totalRequests, double skew) {
         // Make sure servers are reset and active
         resetAllServers();
         activateAllServers();
@@ -248,7 +249,7 @@ public class CliMain {
         clientNode.setMetricsListener(benchmark);
 
         // Build 6000 intra-shard transfers evenly across shards
-        List<String> txs = ClientBenchmark.buildIntraShardTransfers(accountToClusterIndex, totalRequests);
+        List<String> txs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, totalRequests, skew);
 
         System.out.printf("Starting benchmark: %d intra-shard transfers%n", totalRequests);
 
@@ -258,8 +259,8 @@ public class CliMain {
         }
 
         try {
-            // Wait up to e.g. 60 seconds for all replies
-            benchmark.awaitCompletion(10, TimeUnit.SECONDS);
+            int secondsToWait = Math.max(totalRequests / 500, 10);
+            benchmark.awaitCompletion(secondsToWait, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             System.out.println("Benchmark interrupted.");
@@ -267,6 +268,126 @@ public class CliMain {
         }
 
         benchmark.printResults();
+    }
+
+    private void runBenchmarkWithWarmup(int totalRequests, double skew) {
+        resetAllServers();
+        activateAllServers();
+
+        // Wait for leaders to stabilize
+        System.out.println("Waiting for leader election to stabilize...");
+        try {
+            sleep(500);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+
+        Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
+        ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
+        registerActiveClientNode(clientNode);
+
+        // Warm-up phase - send a few transactions without measuring
+        System.out.println("Running warm-up transactions...");
+        List<String> warmupTxs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, 60, 0.5);
+        CountDownLatch warmupLatch = new CountDownLatch(warmupTxs.size());
+        clientNode.setMetricsListener((req, latency) -> warmupLatch.countDown());
+        for (String tx : warmupTxs) {
+            clientNode.processTransaction(tx);
+        }
+        try {
+            warmupLatch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Now run actual benchmark
+        ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
+        clientNode.setMetricsListener(benchmark);
+
+        List<String> txs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, totalRequests, skew);
+        // ... rest of benchmark
+    }
+
+
+    private void runContentionSuite(int transactionsPerDataset) {
+        Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
+
+        ContentionBenchmarkSuite suite = new ContentionBenchmarkSuite(
+                (transactions, skew) -> executeSingleBenchmark(transactions, accountToClusterIndex),
+                accountToClusterIndex
+        );
+
+        suite.runSuite(transactionsPerDataset);
+        suite.printSummary();
+        suite.exportResults();
+        suite.generateCharts();  // Generate both charts
+    }
+
+
+    private ContentionBenchmarkSuite.BenchmarkResult executeSingleBenchmark(List<String> transactions,
+                                                                            Map<Integer, Integer> accountToClusterIndex) {
+        resetAllServers();
+        activateAllServers();
+
+        // Wait for leaders to stabilize
+        System.out.println("Waiting for leader election to stabilize...");
+        try {
+            sleep(500);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+
+        ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
+        registerActiveClientNode(clientNode);
+
+        // Warm-up phase - send a few transactions without measuring
+        System.out.println("Running warm-up transactions...");
+        List<String> warmupTxs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, 60, 0.5);
+        CountDownLatch warmupLatch = new CountDownLatch(warmupTxs.size());
+        clientNode.setMetricsListener((req, latency) -> warmupLatch.countDown());
+        for (String tx : warmupTxs) {
+            clientNode.processTransaction(tx);
+        }
+        try {
+            warmupLatch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        int totalRequests = transactions.size();
+        ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
+        clientNode.setMetricsListener(benchmark);
+
+        benchmark.start();
+        for (String tx : transactions) {
+            clientNode.processTransaction(tx);
+        }
+
+        try {
+            int secondsToWait = Math.max(totalRequests / 500, 10);
+            benchmark.awaitCompletion(secondsToWait, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Extract metrics from benchmark
+        return extractResult(benchmark, totalRequests);
+    }
+
+    private ContentionBenchmarkSuite.BenchmarkResult extractResult(ClientBenchmark benchmark, int totalRequests) {
+        // You'll need to expose these fields or add getters in ClientBenchmark
+        // For now, assuming you add getters:
+        return new ContentionBenchmarkSuite.BenchmarkResult(
+                0.0,  // skew will be set by suite
+                0,    // run number will be set by suite
+                totalRequests,
+                (int) benchmark.getCompletedCount(),
+                benchmark.getElapsedSeconds(),
+                benchmark.getThroughput(),
+                benchmark.getAvgLatencyMs(),
+                benchmark.getMinLatencyMs(),
+                benchmark.getMaxLatencyMs()
+        );
     }
 
 
@@ -344,7 +465,8 @@ public class CliMain {
             System.out.println(" 7 - DEBUG: Pause/Resume client (pause a client to inspect logs/db)");
             System.out.println(" 8 - DEBUG: Choose next set number");
             System.out.println(" 9 - DEBUG: PrintDB directly");
-            System.out.println(" 10 - Run synthetic benchmark (6000 intra-shard tx)");
+            System.out.println(" 10 - Run one benchmark");
+            System.out.println(" 11 - Run benchmark suite");
             System.out.println(" 0 - Exit");
             System.out.print("Choice: ");
             String choice = sc.nextLine().trim();
@@ -405,7 +527,52 @@ public class CliMain {
                     cli.printDBForAccountId(idStr);
                 }
                 case "10" -> {
-                    cli.runBenchmark(300);
+                    System.out.println("Enter number of requests for benchmark (e.g., 300): ");
+                    String reqStr = sc.nextLine().trim();
+                    int reqCount = Integer.parseInt(reqStr);
+                    try {
+                        if (reqCount <= 0) {
+                            System.out.println("# requests must be positive.");
+                            break;
+                        }
+                        int clusterCount = Config.getServerClusterCount();
+                        if (reqCount % clusterCount != 0) {
+                            System.out.println("# requests must be divisible by number of clusters");
+                            break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid request count.");
+                        break;
+                    }
+
+                    System.out.println("Enter skew percentage for benchmark (e.g., 40): ");
+                    int skewPercent = Integer.parseInt(sc.nextLine().trim());
+                    if (skewPercent < 0 || skewPercent > 100) {
+                        System.out.println("Skew percentage must be between 0 and 100.");
+                        break;
+                    }
+                    double skew = skewPercent / 100.0;
+                    cli.runBenchmark(reqCount, skew);
+                }
+                case "11" -> {
+                    System.out.println("Enter number of requests for benchmark suite (e.g., 300): ");
+                    String reqStr = sc.nextLine().trim();
+                    int reqCount = Integer.parseInt(reqStr);
+                    try {
+                        if (reqCount <= 0) {
+                            System.out.println("# requests must be positive.");
+                            break;
+                        }
+                        int clusterCount = Config.getServerClusterCount();
+                        if (reqCount % clusterCount != 0) {
+                            System.out.println("# requests must be divisible by number of clusters");
+                            break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid request count.");
+                        break;
+                    }
+                    cli.runContentionSuite(reqCount);
                 }
                 case "0" -> {
                     System.out.println("Exiting...");
