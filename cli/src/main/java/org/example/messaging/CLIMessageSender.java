@@ -7,7 +7,10 @@ import org.apache.logging.log4j.Logger;
 import org.example.*;
 import org.example.config.Config;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -111,6 +114,35 @@ public class CLIMessageSender extends MessageSender {
             System.out.println(response.getCliResponse());
         } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    public void printNewView() {
+        List<String> responses = new ArrayList<>();
+        for (int serverId = 1; serverId <= Config.getServerCount(); serverId++) {
+            try {
+                CLIResponse resp = stubManager.getCLIBlockingStub(serverId).getNewViews(Empty.getDefaultInstance());
+                if (resp != null) {
+                    String body = resp.getCliResponse();
+                    if (body != null && !body.isEmpty()) {
+                        responses.add(body);
+                    }
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to fetch new view from server {}: {}", serverId, e.getMessage());
+            }
+        }
+
+        if (responses.isEmpty()) {
+            System.out.println("No new view information available from servers.");
+            return;
+        }
+
+        // Sort full response blocks and print them consecutively
+        Collections.sort(responses);
+        System.out.println("Unified New Views (sorted):");
+        for (String block : responses) {
+            System.out.println(block);
         }
     }
 }

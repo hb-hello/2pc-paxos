@@ -4,6 +4,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.LoggerContext;
 import org.example.benchmark.ClientBenchmark;
+import org.example.benchmark.ClientMetricsListener;
 import org.example.benchmark.ContentionBenchmarkSuite;
 import org.example.client.ClientNode;
 import org.example.client.TransactionSet;
@@ -43,7 +44,7 @@ public class CliMain {
     private final ClientServiceClient clientServiceClient;
 
     private volatile ClientNode activeClientNode;
-    private final AtomicBoolean performFirstWarmup = new AtomicBoolean(true);
+    private volatile ClientBenchmark activeBenchmark;
 
     public CliMain() {
         // Instantiate DBHandler so CLI commands can query DB contents
@@ -159,6 +160,7 @@ public class CliMain {
      * - activate the correct live servers
      * - build a ClientNode using DBHandler's account→cluster mapping
      * - send all transactions in order
+     * - track throughput and latency using ClientBenchmark
      */
     private void processTransactionSet(int setNumber) {
         if (transactionSets == null || transactionSets.isEmpty()) {
@@ -186,24 +188,42 @@ public class CliMain {
         ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
         registerActiveClientNode(clientNode);
 
-        if (performFirstWarmup.get()) {
-            dbHandler.resetDatabases();
-            resetAllServers();
-            activateAllServers();
-            warmupWithTransactions(accountToClusterIndex, clientNode);
-            performFirstWarmup.set(false);
-        }
+        // Create and register a benchmark to track metrics
+        int totalRequests = set.transactions().size();
+        ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
+        clientNode.setMetricsListener(benchmark);
+        this.activeBenchmark = benchmark;
 
         dbHandler.resetDatabases();
         resetAllServers();
         activateServers(set.liveNodes());
 
-        // Send all transactions in order
+        // Start timing and send all transactions
+        benchmark.start();
         for (String tx : set.transactions()) {
             clientNode.processTransaction(tx);
         }
 
-        System.out.printf("Finished processing set %d%n", setNumber);
+        try {
+            benchmark.awaitCompletion(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            System.out.println("Interrupted while waiting for transaction set completion.");
+            return;
+        }
+
+        System.out.printf("Finished sending set %d. Use option 3 to view performance stats.%n", setNumber);
+    }
+
+    /**
+     * Print performance statistics from the active benchmark.
+     */
+    private void printPerformanceStats() {
+        ClientBenchmark benchmark = this.activeBenchmark;
+        if (benchmark == null) {
+            System.out.println("No active benchmark. Run a transaction set first (option 5).");
+            return;
+        }
+        benchmark.printResults();
     }
 
     private void printDBForAccountId(String idStr) {
@@ -239,6 +259,14 @@ public class CliMain {
             cliMessageSender.printTrackedRequests(serverId);
         } catch (Exception e) {
             System.out.println("Error fetching tracked requests for server " + serverId + ": " + e.getMessage());
+        }
+    }
+
+    private void fetchAndPrintNewView() {
+        try {
+            cliMessageSender.printNewView();
+        } catch (Exception e) {
+            System.out.println("Error fetching new view information: " + e.getMessage());
         }
     }
 
@@ -293,7 +321,7 @@ public class CliMain {
         ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
         registerActiveClientNode(clientNode);
 
-        warmupWithTransactions(accountToClusterIndex, clientNode);
+        warmupWithTransactions(accountToClusterIndex, clientNode, 90);
 
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
         clientNode.setMetricsListener(benchmark);
@@ -333,7 +361,7 @@ public class CliMain {
         ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
         registerActiveClientNode(clientNode);
 
-        warmupWithTransactions(accountToClusterIndex, clientNode);
+        warmupWithTransactions(accountToClusterIndex, clientNode, 90);
 
         int totalRequests = transactions.size();
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
@@ -355,12 +383,22 @@ public class CliMain {
         return extractResult(benchmark, totalRequests);
     }
 
-    private void warmupWithTransactions(Map<Integer, Integer> accountToClusterIndex, ClientNode clientNode) {
+    private void warmupWithTransactions(Map<Integer, Integer> accountToClusterIndex, ClientNode clientNode, int warmupTxCount) {
         // Warm-up phase - send a few transactions without measuring
         System.out.println("Running warm-up transactions...");
-        List<String> warmupTxs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, 180, 0.5);
+        List<String> warmupTxs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, warmupTxCount, 0.1);
         CountDownLatch warmupLatch = new CountDownLatch(warmupTxs.size());
-        clientNode.setMetricsListener((req, latency) -> warmupLatch.countDown());
+        clientNode.setMetricsListener(new ClientMetricsListener() {
+            @Override
+            public void onRequestCompleted(ClientRequest request, long latencyMillis) {
+                warmupLatch.countDown();
+            }
+
+            @Override
+            public void onRequestAborted(ClientRequest request, long latencyMillis) {
+                warmupLatch.countDown();
+            }
+        });
         for (String tx : warmupTxs) {
             clientNode.processTransaction(tx);
         }
@@ -369,6 +407,20 @@ public class CliMain {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /**
+     * Public overload for warmup with transactions that creates its own ClientNode.
+     * Can be called right after cli.awaitWarmup() in main method.
+     */
+    public void warmupWithTransactions(int warmupTxCount) {
+        Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
+        ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor(), false);
+        registerActiveClientNode(clientNode);
+        resetAllServers();
+        activateAllServers();
+        warmupWithTransactions(accountToClusterIndex, clientNode, warmupTxCount);
+        System.out.println("Transaction warmup complete.");
     }
 
     private ContentionBenchmarkSuite.BenchmarkResult extractResult(ClientBenchmark benchmark, int totalRequests) {
@@ -408,7 +460,7 @@ public class CliMain {
         clientNode.handleClientReply(reply);
     }
 
-    private void awaitWarmup() {
+    private void awaitWarmupWithPings() {
         try {
             warmupComplete.await();
         } catch (InterruptedException e) {
@@ -442,8 +494,8 @@ public class CliMain {
 
         CliMain cli = new CliMain();
         System.out.println("Waiting for CLI warmup to complete...");
-        cli.awaitWarmup();
-
+        cli.awaitWarmupWithPings();
+        cli.warmupWithTransactions(180);
         System.out.println("Warmup complete. CLI is ready.");
 
         int nextSetNumber = 1;
@@ -453,14 +505,14 @@ public class CliMain {
             System.out.println();
             System.out.println("Options:");
             System.out.println(" 1 - PrintDB");
-            System.out.println(" 2 - PrintLog");
-            System.out.println(" 3 - PrintRequests");
+            System.out.println(" 2 - PrintBalance");
+            System.out.println(" 3 - Performance");
             System.out.println(" 4 - PrintView");
             System.out.println(" 5 - Continue with next set (#" + nextSetNumber + ")");
-            System.out.println(" 6 - DEBUG: PrintOperationLog");
-            System.out.println(" 7 - DEBUG: Pause/Resume client (pause a client to inspect logs/db)");
+            System.out.println(" 6 - PrintReshard");
+            System.out.println(" 7 - DEBUG: PrintRequestsTracked");
             System.out.println(" 8 - DEBUG: Choose next set number");
-            System.out.println(" 9 - DEBUG: PrintDB directly");
+            System.out.println(" 9 - DEBUG: PrintLog");
             System.out.println(" 10 - Run one benchmark");
             System.out.println(" 11 - Run benchmark suite");
             System.out.println(" 0 - Exit");
@@ -473,20 +525,27 @@ public class CliMain {
                     cli.fetchAndPrintDB();
                 }
                 case "2" -> {
-                    System.out.print("Enter server ID to print log from: ");
-                    try {
-                        int serverId = Integer.parseInt(sc.nextLine().trim());
-                        if (serverId <= 0 || serverId > Config.getServerCount()) {
-                            System.out.println("Server ID must be positive and less than " + (Config.getServerCount() + 1) + ".");
-                            break;
-                        }
-                        cli.fetchAndPrintLog(serverId);
-                    } catch (NumberFormatException e) {
-                        System.out.println("Invalid server ID.");
-                    }
+                    System.out.print("Enter client ID: ");
+                    String idStr = sc.nextLine().trim();
+                    cli.printDBForAccountId(idStr);
                 }
                 case "3" -> {
-                    System.out.print("Enter server ID to print requests from: ");
+                    cli.printPerformanceStats();
+                }
+                case "4" -> {
+                    System.out.println("Fetching and printing new view information from all servers:");
+                    cli.fetchAndPrintNewView();
+                }
+                case "5" -> {
+                    System.out.println("Processing transaction set #" + (nextSetNumber));
+                    cli.processTransactionSet(nextSetNumber);
+                    nextSetNumber++;
+                }
+                case "6" -> {
+                    System.out.println("Resharding not implemented yet.");
+                }
+                case "7" -> {
+                    System.out.print("Enter server ID to print tracked requests from: ");
                     try {
                         int serverId = Integer.parseInt(sc.nextLine().trim());
                         if (serverId <= 0 || serverId > Config.getServerCount()) {
@@ -497,11 +556,6 @@ public class CliMain {
                     } catch (NumberFormatException e) {
                         System.out.println("Invalid server ID.");
                     }
-                }
-                case "5" -> {
-                    System.out.println("Processing transaction set #" + (nextSetNumber));
-                    cli.processTransactionSet(nextSetNumber);
-                    nextSetNumber++;
                 }
                 case "8" -> {
                     System.out.print("Enter set #: ");
@@ -518,9 +572,17 @@ public class CliMain {
                     }
                 }
                 case "9" -> {
-                    System.out.print("Enter client ID: ");
-                    String idStr = sc.nextLine().trim();
-                    cli.printDBForAccountId(idStr);
+                    System.out.print("Enter server ID to print log from: ");
+                    try {
+                        int serverId = Integer.parseInt(sc.nextLine().trim());
+                        if (serverId <= 0 || serverId > Config.getServerCount()) {
+                            System.out.println("Server ID must be positive and less than " + (Config.getServerCount() + 1) + ".");
+                            break;
+                        }
+                        cli.fetchAndPrintLog(serverId);
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid server ID.");
+                    }
                 }
                 case "10" -> {
                     System.out.println("Enter number of requests for benchmark (e.g., 300): ");

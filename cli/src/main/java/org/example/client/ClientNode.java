@@ -32,17 +32,26 @@ public class ClientNode {
 
     private volatile ClientMetricsListener metricsListener;
 
+    private final boolean printReplies;
+
     public void setMetricsListener(ClientMetricsListener listener) {
         this.metricsListener = listener;
     }
 
     public ClientNode(CLIMessageSender messageSender,
-                      Map<Integer, Integer> accountIdToClusterIndex, ScheduledExecutorService scheduler) {
+                      Map<Integer, Integer> accountIdToClusterIndex,
+                      ScheduledExecutorService scheduler) {
+        this(messageSender, accountIdToClusterIndex, scheduler, true);
+    }
+
+    public ClientNode(CLIMessageSender messageSender,
+                      Map<Integer, Integer> accountIdToClusterIndex, ScheduledExecutorService scheduler, boolean printReplies) {
         this.messageSender = messageSender;
         this.accountIdToClusterIndex = accountIdToClusterIndex;
         this.scheduler = scheduler;
         this.clusterIndexLeaderId = new HashMap<>();
         this.clusterIndexNodeIds = new HashMap<>();
+        this.printReplies = printReplies;
 
         int clusterCount = Config.getServerClusterCount();
         int clusterSize = Config.getServerClusterSize(); // 3 in the base config
@@ -227,6 +236,7 @@ public class ClientNode {
                                      boolean fromBroadcast) {
         long latency;
         ClientRequest completedRequest;
+        boolean wasAborted;
         synchronized (ctx) {
             if (ctx.completed) {
                 return;
@@ -234,14 +244,25 @@ public class ClientNode {
             ctx.completed = true;
             latency = System.currentTimeMillis() - ctx.startTimeMillis;
             completedRequest = ctx.request;
-            logger.info("Request {} completed via node {} in {} ms, result={}",
-                    ctx.key(), nodeId, latency, reply.getResult());
-            System.out.println("Reply for request " + formatOperation(ctx.getRequest().getOperation()) + " from node " + nodeId + ": " + reply.getResult());
+            wasAborted = reply.getAborted();
+            if (!wasAborted) {
+                logger.info("Request {} completed via node {} in {} ms, result={}",
+                        ctx.key(), nodeId, latency, reply.getResult());
+                if (printReplies) System.out.println("Reply for request " + formatOperation(completedRequest.getOperation()) + " from node " + nodeId + ": " + reply.getResult());
+            } else {
+                logger.info("Request {} aborted by node {} in {} ms.",
+                        ctx.key(), nodeId, latency);
+                if (printReplies) System.out.println("Reply for request " + formatOperation(completedRequest.getOperation()) + " from node " + nodeId + ": ABORTED");
+            }
         }
 
         ClientMetricsListener listener = metricsListener;
         if (listener != null) {
-            listener.onRequestCompleted(completedRequest, latency);
+            if (wasAborted) {
+                listener.onRequestAborted(completedRequest, latency);
+            } else {
+                listener.onRequestCompleted(completedRequest, latency);
+            }
         }
         pendingRequests.remove(PendingRequestKey.of(ctx.request));
     }

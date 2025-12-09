@@ -65,6 +65,23 @@ public final class ServerMessageFormatter {
                 "}";
     }
 
+    private static String formatNewViewDetailed(NewViewMessage m) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(formatNewView(m));
+        sb.append(", AcceptMessages=[");
+        for (AcceptMessage am : m.getAcceptLogList()) {
+            sb.append("\n");
+            sb.append(formatAccept(am)).append(", ");
+        }
+        sb.append("],\nCommitMessages=[");
+        for (CommitMessage cm : m.getCommitLogList()) {
+            sb.append("\n");
+            sb.append(formatCommit(cm)).append(", ");
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
     private static String txIDFromRequest(ClientRequest req) {
         return req.getRequestId();
     }

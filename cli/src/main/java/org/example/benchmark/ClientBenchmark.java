@@ -23,6 +23,7 @@ public class ClientBenchmark implements ClientMetricsListener {
     private final CountDownLatch latch;
 
     private final LongAdder completed = new LongAdder();
+    private final LongAdder aborted = new LongAdder();
     private final AtomicLong totalLatencyMillis = new AtomicLong(0L);
     private final AtomicLong minLatencyMillis = new AtomicLong(Long.MAX_VALUE);
     private final AtomicLong maxLatencyMillis = new AtomicLong(0L);
@@ -54,22 +55,40 @@ public class ClientBenchmark implements ClientMetricsListener {
         latch.countDown();
     }
 
+    @Override
+    public void onRequestAborted(ClientRequest request, long latencyMillis) {
+        aborted.increment();
+        totalLatencyMillis.addAndGet(latencyMillis);
+
+        minLatencyMillis.updateAndGet(prev -> Math.min(prev, latencyMillis));
+        maxLatencyMillis.updateAndGet(prev -> Math.max(prev, latencyMillis));
+
+        latch.countDown();
+    }
+
     public void printResults() {
         long done = completed.sum();
-        if (done == 0) {
-            System.out.println("Benchmark: no requests completed.");
+        long abortedCount = aborted.sum();
+        long total = done + abortedCount;
+
+        if (total == 0) {
+            System.out.println("Benchmark: no requests completed or aborted.");
             return;
         }
 
-        double avgLatency = totalLatencyMillis.get() / (double) done;
+        double avgLatency = totalLatencyMillis.get() / (double) total;
         long min = minLatencyMillis.get() == Long.MAX_VALUE ? 0 : minLatencyMillis.get();
         long max = maxLatencyMillis.get();
 
-        double elapsedSeconds = (endTimeNanos - startTimeNanos) / 1_000_000_000.0;
-        double throughput = elapsedSeconds > 0 ? done / elapsedSeconds : 0.0;
+        long effectiveEnd = (endTimeNanos == 0L) ? System.nanoTime() : endTimeNanos;
+        double elapsedSeconds = (effectiveEnd - startTimeNanos) / 1_000_000_000.0;
+        double throughput = elapsedSeconds > 0 ? total / elapsedSeconds : 0.0;
+        double abortRate = total > 0 ? (abortedCount * 100.0) / total : 0.0;
 
-        System.out.printf("Benchmark complete: %d requests in %.3f s%n", done, elapsedSeconds);
+        System.out.printf("Benchmark complete: %d total (%d completed, %d aborted) in %.3f s%n",
+                total, done, abortedCount, elapsedSeconds);
         System.out.printf("Throughput: %.2f requests/second%n", throughput);
+        System.out.printf("Abort rate: %.2f%%%n", abortRate);
         System.out.printf("Latency (ms) - avg: %.2f, min: %d, max: %d%n",
                 avgLatency, min, max);
     }
@@ -346,8 +365,18 @@ public class ClientBenchmark implements ClientMetricsListener {
         return completed.sum();
     }
 
+    public long getAbortedCount() {
+        return aborted.sum();
+    }
+
+    public double getAbortRate() {
+        long total = completed.sum() + aborted.sum();
+        return total > 0 ? (aborted.sum() * 100.0) / total : 0.0;
+    }
+
     public double getElapsedSeconds() {
-        return (endTimeNanos - startTimeNanos) / 1_000_000_000.0;
+        long effectiveEnd = (endTimeNanos == 0L) ? System.nanoTime() : endTimeNanos;
+        return (effectiveEnd - startTimeNanos) / 1_000_000_000.0;
     }
 
     public double getThroughput() {
