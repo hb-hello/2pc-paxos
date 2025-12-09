@@ -437,6 +437,51 @@ public class CliMain {
         );
     }
 
+    private void printReshard(int setNumber) {
+        if (transactionSets == null || transactionSets.isEmpty()) {
+            System.out.println("No transaction sets loaded.");
+            return;
+        }
+
+        TransactionSet set = transactionSets.stream()
+                .filter(ts -> ts.setNumber() == setNumber)
+                .findFirst()
+                .orElse(null);
+
+        if (set == null) {
+            System.out.printf("Transaction set %d not found.%n", setNumber);
+            return;
+        }
+
+        int clusterCount = Config.getServerClusterCount();  // likely 3
+        Map<Integer, Integer> current = dbHandler.getAccountIdToClusterIndex();
+        List<String> recentTxs = set.transactions();
+        List<ReshardingPlanner.Move> moves = ReshardingPlanner.computeReshardingMoves(current, recentTxs, clusterCount);
+        if (moves.isEmpty()) {
+            System.out.println("No resharding moves suggested based on recent transactions.");
+        } else {
+            System.out.println("Applying suggested resharding moves:");
+            for (ReshardingPlanner.Move move : moves) {
+                System.out.println(move);
+            }
+
+            // Execute moves using DBHandler
+            System.out.println("Executing resharding moves now...");
+            for (ReshardingPlanner.Move move : moves) {
+                int accountId = move.accountId();
+                int targetCluster = move.newCluster();
+                try {
+                    dbHandler.moveAccount(accountId, targetCluster);
+                    // Update local view
+                    current.put(accountId, targetCluster);
+//                    System.out.printf("Moved account %d -> cluster %d\n", accountId, targetCluster);
+                } catch (Exception e) {
+                    System.out.printf("Failed to move account %d -> cluster %d: %s\n", accountId, targetCluster, e.getMessage());
+                }
+            }
+            System.out.println("Resharding moves execution completed.");
+        }
+    }
 
     private void shutdown() {
         try {
@@ -498,6 +543,7 @@ public class CliMain {
         cli.warmupWithTransactions(180);
         System.out.println("Warmup complete. CLI is ready.");
 
+        int currentSet = 1;
         int nextSetNumber = 1;
         Scanner sc = new Scanner(System.in);
 
@@ -539,11 +585,10 @@ public class CliMain {
                 case "5" -> {
                     System.out.println("Processing transaction set #" + (nextSetNumber));
                     cli.processTransactionSet(nextSetNumber);
+                    currentSet = nextSetNumber;
                     nextSetNumber++;
                 }
-                case "6" -> {
-                    System.out.println("Resharding not implemented yet.");
-                }
+                case "6" -> cli.printReshard(currentSet);
                 case "7" -> {
                     System.out.print("Enter server ID to print tracked requests from: ");
                     try {
@@ -566,6 +611,7 @@ public class CliMain {
                             break;
                         }
                         cli.processTransactionSet(set);
+                        currentSet = set;
                         nextSetNumber = set + 1;
                     } catch (NumberFormatException e) {
                         System.out.println("Invalid set number.");
@@ -643,3 +689,4 @@ public class CliMain {
         }
     }
 }
+
