@@ -12,6 +12,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
 
+import static org.example.messaging.ServerMessageFormatter.formatOperation;
+
 public class ClientNode {
 
     private static final Logger logger = LogManager.getLogger(ClientNode.class);
@@ -234,6 +236,7 @@ public class ClientNode {
             completedRequest = ctx.request;
             logger.info("Request {} completed via node {} in {} ms, result={}",
                     ctx.key(), nodeId, latency, reply.getResult());
+            System.out.println("Reply for request " + formatOperation(ctx.getRequest().getOperation()) + " from node " + nodeId + ": " + reply.getResult());
         }
 
         ClientMetricsListener listener = metricsListener;
@@ -332,11 +335,15 @@ public class ClientNode {
         }
 
         public String key() {
-            return request.getClientId() + ":" + request.getTimestamp();
+            return request.getRequestId();
         }
 
         public void setStartTimeMillis(long startTimeMillis) {
             this.startTimeMillis = startTimeMillis;
+        }
+
+        public ClientRequest getRequest() {
+            return request;
         }
     }
 

@@ -23,6 +23,12 @@ public class TPCMessageSender extends MessageSender {
         stubManager.getTPCStub(targetNodeId).tPCPrepare(prepare.payload());
     }
 
+    public void sendPrepared(int targetNodeId, ServerMessage<TPCPreparedMessage> prepared) {
+        ensureActive();
+        logger.info("Sending TPC Prepared to node {} : {}", targetNodeId, prepared);
+        stubManager.getTPCStub(targetNodeId).tPCPrepared(prepared.payload());
+    }
+
     public void sendCommit(int targetNodeId, ServerMessage<TPCCommitMessage> commit, StreamObserver<TPCAckMessage> responseObserver) {
         ensureActive();
         logger.info("Sending TPC Commit to node {} : {}", targetNodeId, commit);
@@ -40,6 +46,12 @@ public class TPCMessageSender extends MessageSender {
         ensureActive();
         logger.info("Sending TPC Abort to node {} : {}", targetNodeId, abort);
         stubManager.getTPCAsyncStub(targetNodeId).withDeadlineAfter(Config.getServerTimeoutMillis(), TimeUnit.MILLISECONDS).tPCAbort(abort.payload(), responseObserver);
+    }
+
+    public void sendAbortWithoutResponse(int targetNodeId, ServerMessage<TPCAbortMessage> abort) {
+        ensureActive();
+        logger.info("Sending TPC Abort without response to node {} : {}", targetNodeId, abort);
+        stubManager.getTPCStub(targetNodeId).tPCAbort(abort.payload());
     }
 
     public void broadcastAbortToCluster(int targetNodeId, ServerMessage<TPCAbortMessage> abort, StreamObserver<TPCAckMessage> observer) {

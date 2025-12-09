@@ -26,6 +26,9 @@ public class OperationLog {
     private final CheckpointManager checkpointManager;
     private final MetricsListener metricsListener;
 
+    // Map from client request ID to sequence number (for checkpoint lookup)
+    private final ConcurrentMap<String, Long> requestIdToSeqNum = new ConcurrentHashMap<>();
+
     public OperationLog(Consumer<ServerMessage<ClientRequest>> onNewClientRequest, CheckpointManager checkpointManager, MetricsListener metricsListener) {
         this.STATUS_ORDER = new EnumMap<>(OperationStatus.class);
         STATUS_ORDER.put(OperationStatus.NONE, 0);
@@ -78,6 +81,8 @@ public class OperationLog {
             // Should not happen if seq numbers are strictly monotonic
             logger.warn("Seq {} already present when adding operation: {}", seq, prev);
         }
+        // Record the mapping from request ID to sequence number
+        requestIdToSeqNum.put(request.getMessageId(), seq);
         metricsListener.onStatusTransition(seq, OperationStatus.NONE, status, now);
         return seq;
     }
@@ -200,6 +205,8 @@ public class OperationLog {
 
         if (updated.get()) {
             nextSeqNum.accumulateAndGet(seqNum + 1, Math::max);
+            // Record the mapping from request ID to sequence number
+            requestIdToSeqNum.put(request.getMessageId(), seqNum);
         }
 
         return updated.get();
@@ -208,7 +215,8 @@ public class OperationLog {
     public boolean hasRequestsWaitingToExecute() {
         for (long seqNum : entries.keySet()) {
             OperationStatus status = entries.get(seqNum).status();
-            if (status == OperationStatus.COMMITTED || status == OperationStatus.ACCEPTED || status == OperationStatus.NONE) {
+            Phase phase = entries.get(seqNum).phase();
+            if (phase == Phase.PREPARE && (status != OperationStatus.EXECUTED)) {
                 logger.info("Waiting to execute : Found request at seqNum {} with status {}", seqNum, status);
                 return true;
             }
@@ -313,5 +321,15 @@ public class OperationLog {
               .append("\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * Get the sequence number for a given request ID.
+     *
+     * @param requestId the client request ID
+     * @return the sequence number, or null if not found
+     */
+    public Long getSeqNumForRequest(String requestId) {
+        return requestIdToSeqNum.get(requestId);
     }
 }

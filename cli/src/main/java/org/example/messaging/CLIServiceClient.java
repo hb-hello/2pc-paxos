@@ -28,7 +28,7 @@ public class CLIServiceClient extends CLIServiceGrpc.CLIServiceImplBase {
         synchronized (warmedUp) {
             if (!warmedUp.get()) {
                 logger.debug("Warming up CLI client after receiving first ping");
-                cli.warmup();
+                cli.warmupWithPings();
                 warmedUp.set(true);
             }
         }

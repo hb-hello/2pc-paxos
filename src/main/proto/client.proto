@@ -53,4 +53,5 @@ message ClientReply {
   int32 sender_id = 1;
   OperationResult result = 2;
   string request_id = 3;
+  bool aborted = 4;
 }

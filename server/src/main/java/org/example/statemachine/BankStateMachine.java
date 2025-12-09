@@ -59,6 +59,8 @@ public final class BankStateMachine implements StateMachine {
         return op.accept(new StateMachineOperation.Visitor<>() {
             @Override
             public OperationResult onTransfer(int sender, int receiver, double amount) {
+                logger.info("Executing transfer: {} -> {} amount {} in mode {}",
+                        sender, receiver, amount, mode);
                 // No-op transfer, always succeeds and does not mutate state
                 if (amount == 0.0) {
                     return StateMachineOperationResultMapper.toProto(
@@ -80,6 +82,7 @@ public final class BankStateMachine implements StateMachine {
 
             @Override
             public OperationResult onBalanceRequest(int accountId) {
+                logger.info("Executing balance request for account {} in mode {}", accountId, mode);
                 double balance = requireBalance(accountId);
                 return StateMachineOperationResultMapper.toProto(
                         StateMachineOperationResult.balance(balance)
@@ -105,8 +108,6 @@ public final class BankStateMachine implements StateMachine {
 
                 modifiedBalances.put(sender, newFrom);
                 modifiedBalances.put(receiver, newTo);
-//                logger.info("handleTransferBoth: transferred {} from {} to {}; modifiedBalances size now {}",
-//                        amount, sender, receiver, modifiedBalances.size());
 
                 return StateMachineOperationResultMapper.toProto(
                         StateMachineOperationResult.success(true)

@@ -1,6 +1,7 @@
 package org.example.tpc;
 
 import io.grpc.BindableService;
+import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
@@ -12,12 +13,14 @@ import org.example.messaging.ServerMessage;
 import org.example.messaging.TPCMessageSender;
 import org.example.persistence.KeyValueStore;
 import org.example.tpc.handlers.ClientRequestHandler;
+import org.example.tpc.handlers.PrepareHandler;
 import org.example.tpc.handlers.PreparedHandler;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
 public class TPCServer implements TPCHooks {
     private static final Logger logger = LogManager.getLogger(TPCServer.class);
@@ -41,6 +44,7 @@ public class TPCServer implements TPCHooks {
 
     private final PaxosServer paxosServer;
     private final ClientRequestHandler clientRequestHandler;
+    private final PrepareHandler prepareHandler;
     private final PreparedHandler preparedHandler;
 
     public TPCServer(int serverId, CLIServiceServer cliServiceServer, ExecutorManager executorManager, KeyValueStore<Double> database) {
@@ -76,7 +80,7 @@ public class TPCServer implements TPCHooks {
 
         // this will perform warmup
         this.messageSender = new TPCMessageSender(serverId, executorManager.getNetworkExecutor());
-        this.retryManager = new MessageRetryManager(messageSender, Config.getServerTimeoutMillis() * 2L, executorManager.getRetryExecutor());
+        this.retryManager = new MessageRetryManager(messageSender, Config.getServerTimeoutMillis() * 2L, executorManager.getRetryExecutor(), clientRequestTracker::markAckReceived);
 
         this.clientRequestHandler = new ClientRequestHandler(
                 serverId,
@@ -88,9 +92,10 @@ public class TPCServer implements TPCHooks {
                 paxosServer,
                 messageSender,
                 this::sendPrepare,
-                tpcTimer
+                this::markAbortedAndSend
         );
-        this.preparedHandler = new PreparedHandler(tpcTimer, clientRequestTracker, this::markCommittedAndSend);
+        this.prepareHandler = new PrepareHandler(clientRequestTracker, this::sendPrepared, this::sendAbort, this::handleClientRequest);
+        this.preparedHandler = new PreparedHandler(tpcTimer, clientRequestTracker, this::triggerPaxos);
 
         logger.info("TPCServer {} initialized.", serverId);
     }
@@ -130,16 +135,51 @@ public class TPCServer implements TPCHooks {
         executorManager.submitMessageProcessing(() -> clientRequestHandler.handle(request));
     }
 
+    public void handlePrepare(ServerMessage<TPCPrepareMessage> message) {
+        leaderMap.put(Config.getServerClusterIndex(message.payload().getSenderId()), message.payload().getSenderId());
+        handleClientRequest(new ServerMessage<>(message.payload().getClientRequest()));
+    }
+
     public void handlePrepared(ServerMessage<TPCPreparedMessage> message) {
+        leaderMap.put(Config.getServerClusterIndex(message.payload().getSenderId()), message.payload().getSenderId());
         executorManager.submitMessageProcessing(() -> preparedHandler.handle(message));
+    }
+
+    public void handleCommit(ServerMessage<TPCCommitMessage> message, StreamObserver<TPCAckMessage> responseObserver) {
+        leaderMap.put(Config.getServerClusterIndex(message.payload().getSenderId()), message.payload().getSenderId());
+        String requestId = message.payload().getRequestId();
+        if(clientRequestTracker.isCommitted(requestId)) {
+            // idempotent handling
+            logger.info("Received duplicate TPC commit message for already committed requestId {}", requestId);
+            TPCAckMessage ackMessage = TPCAckMessage.newBuilder().build();
+            responseObserver.onNext(ackMessage);
+            responseObserver.onCompleted();
+            return;
+        }
+        if(clientRequestTracker.isConsensusCompletedPhase1(requestId)) triggerPaxos(clientRequestTracker.getRequest(requestId), Phase.COMMIT);
+        else logger.error("No request with consensus complete found for requestId {} while handling TPC commit message", requestId);
+        clientRequestTracker.setAckResponseObserver(requestId, responseObserver);
+    }
+
+    public void handleAbort(ServerMessage<TPCAbortMessage> message, StreamObserver<TPCAckMessage> responseObserver) {
+        leaderMap.put(Config.getServerClusterIndex(message.payload().getSenderId()), message.payload().getSenderId());
+        String requestId = message.payload().getRequestId();
+        if(clientRequestTracker.isAborted(requestId)) {
+            // idempotent handling
+            logger.info("Received duplicate TPC abort message for already committed requestId {}", requestId);
+            TPCAckMessage ackMessage = TPCAckMessage.newBuilder().build();
+            responseObserver.onNext(ackMessage);
+            responseObserver.onCompleted();
+            return;
+        }
+        triggerPaxos(clientRequestTracker.getRequest(requestId), Phase.ABORT);
+        clientRequestTracker.setAckResponseObserver(requestId, responseObserver);
     }
 
     private void tpcTimerCallback(ServerMessage<ClientRequest> request) {
         logger.warn("TPC Server {} detected liveness timeout. Taking appropriate action.", serverId);
         if (clientRequestTracker.markAborted(request)) {
-            operator.undo(request.getMessageId());
-            releaseLocks(request.getMessageId());
-            markAbortedAndSend(request);
+            triggerPaxos(request, Phase.ABORT);
         }
     }
 
@@ -160,23 +200,30 @@ public class TPCServer implements TPCHooks {
     private void releaseLocks(String requestId) {
         ExecutionMode mode = clientRequestTracker.getExecutionMode(requestId);
         lockManager.releaseLock(clientRequestTracker.getOperation(requestId), mode, requestId);
-        operator.markCommittedOrAborted(requestId);
+        paxosServer.refreshTimerOnExecute(requestId, lockManager.hasAnyLocks());
+        operator.markCommitted(requestId);
     }
 
     private void releaseLocksAndSendReply(String requestId, Phase phase) {
-        if (phase == Phase.INTRA_SHARD || (phase == Phase.COMMIT && clientRequestTracker.isCommitted(requestId))) {
+        if (phase != Phase.PREPARE) {
             releaseLocks(requestId);
-            paxosServer.refreshTimerOnExecute(requestId, lockManager.hasAnyLocks());
-            clientRequestTracker.markCommitted(requestId);
             try {
                 if (paxosServer.isLeader()) {
-                    ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(requestId);
-                    if (replyMessage != null) {
-                        messageSender.sendClientReply(replyMessage);
+                    ServerMessage<ClientReply> reply;
+                    if (phase == Phase.ABORT) {
+                        reply = new ServerMessage<>(ClientReply.newBuilder()
+                                .setRequestId(requestId)
+                                .setSenderId(serverId)
+                                .setAborted(true)
+                                .build());
+                    } else reply = clientRequestTracker.getReply(requestId);
+                    if (reply != null) {
+                        messageSender.sendClientReply(reply);
                     } else {
                         logger.error("No reply found for committed request {}", requestId);
                     }
-                    if (!lockManager.hasAnyLocks()) executorManager.submitMessageProcessing(this::processPendingClientRequestsAsLeader);
+                    if (!lockManager.hasAnyLocks())
+                        executorManager.submitMessageProcessing(this::processPendingClientRequestsAsLeader);
                 }
             } catch (Exception e) {
                 logger.error("Error while sending client reply for request {}: {}", requestId, e.getMessage());
@@ -184,6 +231,7 @@ public class TPCServer implements TPCHooks {
         }
     }
 
+    // only done by coordinator i.e., in send mode
     public void sendPrepare(ServerMessage<ClientRequest> request) {
         try {
             int otherClusterIndex = clientRequestTracker.getOtherClusterIndex(request);
@@ -203,13 +251,42 @@ public class TPCServer implements TPCHooks {
         }
     }
 
+    // only done by participant i.e., in receive mode
+    public void markPreparedAndSend(String requestId) {
+        if (clientRequestTracker.markPrepared(requestId)) {
+            if (paxosServer.isLeader()) sendPrepared(requestId);
+        }
+    }
+
+    private void sendPrepared(String requestId) {
+        int otherClusterIndex = clientRequestTracker.getOtherClusterIndex(requestId);
+        if (otherClusterIndex != -1) {
+            int otherClusterLeaderId = leaderMap.get(otherClusterIndex);
+            TPCPreparedMessage tpcPreparedMessage = TPCPreparedMessage.newBuilder()
+                    .setRequestId(requestId)
+                    .setSenderId(serverId)
+                    .build();
+            messageSender.sendPrepared(otherClusterLeaderId, new ServerMessage<>(tpcPreparedMessage));
+        }
+    }
+
     private void markCommittedAndSend(ServerMessage<ClientRequest> request) {
         markCommittedAndSend(request.getMessageId());
     }
 
+    // only done by coordinator i.e., in send mode
     private void markCommittedAndSend(String requestId) {
         releaseLocksAndSendReply(requestId, Phase.COMMIT);
+        clientRequestTracker.markCommitted(requestId);
+        sendCommit(requestId);
+    }
 
+    private void markCommittedWithoutSending(String requestId) {
+        releaseLocks(requestId);
+        clientRequestTracker.markCommitted(requestId);
+    }
+
+    private void sendCommit(String requestId) {
         int otherClusterIndex = clientRequestTracker.getOtherClusterIndex(requestId);
         if (otherClusterIndex != -1) {
             int otherClusterLeaderId = leaderMap.get(otherClusterIndex);
@@ -221,41 +298,123 @@ public class TPCServer implements TPCHooks {
         } else logger.error("No other cluster index found while sending commit for request {}", requestId);
     }
 
+    // can be done by coordinator only i.e., send mode
     private void markAbortedAndSend(ServerMessage<ClientRequest> request) {
-        int otherClusterIndex = clientRequestTracker.getOtherClusterIndex(request);
+        releaseLocksAndSendReply(request.getMessageId(), Phase.ABORT);
+        clientRequestTracker.markAborted(request);
+        sendAbort(request);
+    }
 
+    // can be done by participant only i.e., receive mode
+    private void markAbortedWithoutSending(String requestId) {
+        releaseLocks(requestId);
+        clientRequestTracker.markAborted(requestId);
+    }
+
+    private void sendAbort(ServerMessage<ClientRequest> request) {
+        int otherClusterIndex = clientRequestTracker.getOtherClusterIndex(request);
+        ExecutionMode mode = clientRequestTracker.getExecutionMode(request);
         if (otherClusterIndex != -1) {
             int otherClusterLeaderId = leaderMap.get(otherClusterIndex);
             TPCAbortMessage tpcAbortMessage = TPCAbortMessage.newBuilder()
                     .setRequestId(request.getMessageId())
                     .setSenderId(serverId)
                     .build();
-            retryManager.startAbortRetries(otherClusterLeaderId, new ServerMessage<>(tpcAbortMessage));
-        } else logger.error("No other cluster index found while sending abort for request {}", request.getMessageId());
-
-        clientRequestTracker.markAborted(request);
+            if (mode == ExecutionMode.SENDER)
+                retryManager.startAbortRetries(otherClusterLeaderId, new ServerMessage<>(tpcAbortMessage));
+            else messageSender.sendAbortWithoutResponse(otherClusterLeaderId, new ServerMessage<>(tpcAbortMessage));
+        } else logger.error("No other cluster index found while sending abort for request {}",
+                request.getMessageId());
     }
 
     // ---------- TPCHooks implementation ----------
 
-    @Override
     public void onPaxosCommit(ServerMessage<CommitMessage> commitMessage) {
         long seqNum = commitMessage.payload().getSequenceNumber();
         Phase phase = commitMessage.payload().getPhase();
-        ServerMessage<ClientRequest> request = new ServerMessage<>(commitMessage.payload().getRequest());
+        ServerMessage<ClientRequest> request =
+                new ServerMessage<>(commitMessage.payload().getRequest());
         ExecutionMode mode = clientRequestTracker.getExecutionMode(request);
 
-        clientRequestTracker.markConsensusCompleted(request);
+        switch (phase) {
+            case PREPARE, INTRA_SHARD:
+                handlePrepareOrIntraShardPhase(seqNum, phase, request, mode);
+                break;
 
-        if (phase == Phase.PREPARE || phase == Phase.INTRA_SHARD) {
-            operator.execute(seqNum, mode);
-            if (phase == Phase.PREPARE && clientRequestTracker.isPrepared(request)) {
-                executorManager.submitMessageProcessing(() ->
-                        paxosServer.triggerAccept(request, Phase.COMMIT, commitMessage.payload().getSequenceNumber())
-                );
-                markCommittedAndSend(request);
-            }
+            case COMMIT:
+                handleCommitPhase(request, mode);
+                break;
+
+            case ABORT:
+                handleAbortPhase(request, mode);
+                break;
+
+            default: break;
         }
+    }
+
+    private void handlePrepareOrIntraShardPhase(long seqNum,
+                                                Phase phase,
+                                                ServerMessage<ClientRequest> request,
+                                                ExecutionMode mode) {
+        // Common work for PREPARE and INTRA_SHARD
+        clientRequestTracker.markConsensusCompletedPhase1(request);
+        operator.execute(seqNum, mode);
+
+        // Only PREPARE has extra behavior based on mode
+        if (phase != Phase.PREPARE) {
+            return;
+        }
+
+        switch (mode) {
+            case SENDER:
+                if (clientRequestTracker.isPrepared(request)) triggerPaxos(request, Phase.COMMIT);
+                break;
+
+            case RECEIVER:
+                markPreparedAndSend(request.getMessageId());
+                break;
+
+            default: break;
+        }
+    }
+
+    private void handleCommitPhase(ServerMessage<ClientRequest> request,
+                                   ExecutionMode mode) {
+        clientRequestTracker.markConsensusCompletedPhase2(request);
+        if (mode == ExecutionMode.SENDER && paxosServer.isLeader()) {
+            markCommittedAndSend(request);
+        } else {
+            markCommittedWithoutSending(request.getMessageId());
+            if (mode == ExecutionMode.RECEIVER && paxosServer.isLeader()) clientRequestTracker.sendAckResponse(request.getMessageId());
+        }
+    }
+
+    private void handleAbortPhase(ServerMessage<ClientRequest> request,
+                                  ExecutionMode mode) {
+        clientRequestTracker.markConsensusCompletedPhase2(request);
+        operator.undo(request.getMessageId());
+        if (mode == ExecutionMode.SENDER && paxosServer.isLeader()) {
+            markAbortedAndSend(request);
+        } else {
+            markAbortedWithoutSending(request.getMessageId());
+            if (mode == ExecutionMode.RECEIVER && paxosServer.isLeader()) clientRequestTracker.sendAckResponse(request.getMessageId());
+        }
+    }
+
+    private void triggerPaxos(String requestId, Phase phase) {
+        ServerMessage<ClientRequest> request = clientRequestTracker.getRequest(requestId);
+        if (request != null) {
+            triggerPaxos(request, phase);
+        } else {
+            logger.error("No request found for requestId {} while triggering Paxos for phase {}", requestId, phase);
+        }
+    }
+
+    private void triggerPaxos(ServerMessage<ClientRequest> request, Phase phase) {
+        executorManager.submitMessageProcessing(() ->
+                paxosServer.triggerAccept(request, phase)
+        );
     }
 
     @Override
@@ -268,8 +427,6 @@ public class TPCServer implements TPCHooks {
         ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, request.payload().getOperation(), accountIdToClusterMap);
         int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
         logger.info("New client request {} with execution mode {} and other cluster index {} being added to tracker.", request.getMessageId(), executionMode, otherClusterIndex);
-//        clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
-//        clientRequestTracker.markAccepted(request);
         clientRequestTracker.addAcceptedRequest(request, executionMode, otherClusterIndex);
     }
 
@@ -304,11 +461,7 @@ public class TPCServer implements TPCHooks {
                     if (!clientRequestTracker.isPrepared(request)) sendPrepare(request);
                     onPaxosCommit(new ServerMessage<>(commitMessage));
                 }
-                case COMMIT, INTRA_SHARD -> onPaxosCommit(new ServerMessage<>(commitMessage));
-                case ABORT -> {
-                    releaseLocks(request.getMessageId()); //shouldn't be needed but just in case
-                    markAbortedAndSend(request);
-                }
+                case COMMIT, ABORT, INTRA_SHARD -> onPaxosCommit(new ServerMessage<>(commitMessage));
                 default -> logger.error("Unknown phase {} in commit message during new view handling", phase);
             }
         }

@@ -24,24 +24,28 @@ public class TPCService extends TPCServiceGrpc.TPCServiceImplBase {
     public void tPCPrepare(TPCPrepareMessage request, StreamObserver<Empty> responseObserver) {
         ServerMessage<TPCPrepareMessage> message = new ServerMessage<>(request);
         logger.info("Received TPCPrepare message : {}", message);
+        server.handlePrepare(message);
     }
 
     @Override
     public void tPCPrepared(TPCPreparedMessage request, StreamObserver<Empty> responseObserver) {
         ServerMessage<TPCPreparedMessage> message = new ServerMessage<>(request);
         logger.info("Received TPCPrepared message : {}", message);
+        server.handlePrepared(message);
     }
 
     @Override
     public void tPCCommit(TPCCommitMessage request, StreamObserver<TPCAckMessage> responseObserver) {
         ServerMessage<TPCCommitMessage> message = new ServerMessage<>(request);
         logger.info("Received TPCCommit message : {}", message);
+        server.handleCommit(message, responseObserver);
     }
 
     @Override
     public void tPCAbort(TPCAbortMessage request, StreamObserver<TPCAckMessage> responseObserver) {
         ServerMessage<TPCAbortMessage> message = new ServerMessage<>(request);
         logger.info("Received TPCAbort message : {}", message);
+        server.handleAbort(message, responseObserver);
     }
 
     @Override

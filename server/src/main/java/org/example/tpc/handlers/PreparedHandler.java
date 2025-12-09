@@ -2,12 +2,13 @@ package org.example.tpc.handlers;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.example.ClientRequest;
+import org.example.Phase;
 import org.example.TPCPreparedMessage;
 import org.example.messaging.ServerMessage;
 import org.example.tpc.ClientRequestTracker;
 import org.example.tpc.TPCTimer;
 
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 public class PreparedHandler {
@@ -15,10 +16,10 @@ public class PreparedHandler {
 
     private final TPCTimer tpcTimer;
     private final ClientRequestTracker clientRequestTracker;
-    private final Consumer<String> onPrepared;
+    private final BiConsumer<String, Phase> onPrepared;
 
     public PreparedHandler(TPCTimer tpcTimer, ClientRequestTracker clientRequestTracker,
-                           Consumer<String> onPrepared) {
+                           BiConsumer<String, Phase> onPrepared) {
         this.tpcTimer = tpcTimer;
         this.clientRequestTracker = clientRequestTracker;
         this.onPrepared = onPrepared;
@@ -28,8 +29,8 @@ public class PreparedHandler {
         String requestId = prepared.payload().getRequestId();
         if (clientRequestTracker.markPrepared(requestId)) {
             tpcTimer.stop(requestId);
-            if (clientRequestTracker.isConsensusCompleted(requestId)) {
-                onPrepared.accept(requestId);
+            if (clientRequestTracker.isConsensusCompletedPhase1(requestId)) {
+                onPrepared.accept(requestId, Phase.COMMIT);
             }
         }
     }

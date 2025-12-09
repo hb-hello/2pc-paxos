@@ -231,8 +231,14 @@ public class PaxosState {
     }
 
     public long acceptRequest(ServerMessage<ClientRequest> request, Phase phase) {
-        if (isLeader()) return operationLog.addOperationWithStatus(request, ballot, OperationStatus.ACCEPTED, phase);
-        else return -1L;
+        if (isLeader()) {
+            Long seqNum = getSeqNumForRequest(request.getMessageId());
+            if (seqNum != null) {
+                if (operationLog.setOperationWithStatus(seqNum, request, ballot, OperationStatus.ACCEPTED, phase))
+                    return seqNum;
+            } else return operationLog.addOperationWithStatus(request, ballot, OperationStatus.ACCEPTED, phase);
+        }
+        return -1L;
     }
 
     public boolean acceptRequestWithSeqNum(ServerMessage<ClientRequest> request, Phase phase, long seqNum) {
@@ -269,6 +275,10 @@ public class PaxosState {
 
     public String printOperationLog() {
         return operationLog.printLog();
+    }
+
+    public Long getSeqNumForRequest(String requestId) {
+        return operationLog.getSeqNumForRequest(requestId);
     }
 
     public boolean addCheckpoint(long seqNum, String snapshot) {

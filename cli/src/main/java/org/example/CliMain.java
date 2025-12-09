@@ -43,6 +43,7 @@ public class CliMain {
     private final ClientServiceClient clientServiceClient;
 
     private volatile ClientNode activeClientNode;
+    private final AtomicBoolean performFirstWarmup = new AtomicBoolean(true);
 
     public CliMain() {
         // Instantiate DBHandler so CLI commands can query DB contents
@@ -139,7 +140,7 @@ public class CliMain {
         }
     }
 
-    public void warmup() {
+    public void warmupWithPings() {
         if (!warmupStarted.compareAndSet(false, true)) {
             return;
         }
@@ -185,10 +186,16 @@ public class CliMain {
         ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
         registerActiveClientNode(clientNode);
 
+        if (performFirstWarmup.get()) {
+            dbHandler.resetDatabases();
+            resetAllServers();
+            activateAllServers();
+            warmupWithTransactions(accountToClusterIndex, clientNode);
+            performFirstWarmup.set(false);
+        }
+
         dbHandler.resetDatabases();
-
         resetAllServers();
-
         activateServers(set.liveNodes());
 
         // Send all transactions in order
@@ -248,7 +255,7 @@ public class CliMain {
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
         clientNode.setMetricsListener(benchmark);
 
-        // Build 6000 intra-shard transfers evenly across shards
+        // Build intra-shard transfers evenly across shards
         List<String> txs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, totalRequests, skew);
 
         System.out.printf("Starting benchmark: %d intra-shard transfers%n", totalRequests);
@@ -286,26 +293,12 @@ public class CliMain {
         ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
         registerActiveClientNode(clientNode);
 
-        // Warm-up phase - send a few transactions without measuring
-        System.out.println("Running warm-up transactions...");
-        List<String> warmupTxs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, 60, 0.5);
-        CountDownLatch warmupLatch = new CountDownLatch(warmupTxs.size());
-        clientNode.setMetricsListener((req, latency) -> warmupLatch.countDown());
-        for (String tx : warmupTxs) {
-            clientNode.processTransaction(tx);
-        }
-        try {
-            warmupLatch.await(10, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        warmupWithTransactions(accountToClusterIndex, clientNode);
 
-        // Now run actual benchmark
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
         clientNode.setMetricsListener(benchmark);
 
         List<String> txs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, totalRequests, skew);
-        // ... rest of benchmark
     }
 
 
@@ -340,19 +333,7 @@ public class CliMain {
         ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
         registerActiveClientNode(clientNode);
 
-        // Warm-up phase - send a few transactions without measuring
-        System.out.println("Running warm-up transactions...");
-        List<String> warmupTxs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, 60, 0.5);
-        CountDownLatch warmupLatch = new CountDownLatch(warmupTxs.size());
-        clientNode.setMetricsListener((req, latency) -> warmupLatch.countDown());
-        for (String tx : warmupTxs) {
-            clientNode.processTransaction(tx);
-        }
-        try {
-            warmupLatch.await(10, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        warmupWithTransactions(accountToClusterIndex, clientNode);
 
         int totalRequests = transactions.size();
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
@@ -364,7 +345,7 @@ public class CliMain {
         }
 
         try {
-            int secondsToWait = Math.max(totalRequests / 500, 10);
+            int secondsToWait = Math.max(totalRequests / 200, 10);
             benchmark.awaitCompletion(secondsToWait, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -374,9 +355,23 @@ public class CliMain {
         return extractResult(benchmark, totalRequests);
     }
 
+    private void warmupWithTransactions(Map<Integer, Integer> accountToClusterIndex, ClientNode clientNode) {
+        // Warm-up phase - send a few transactions without measuring
+        System.out.println("Running warm-up transactions...");
+        List<String> warmupTxs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, 180, 0.5);
+        CountDownLatch warmupLatch = new CountDownLatch(warmupTxs.size());
+        clientNode.setMetricsListener((req, latency) -> warmupLatch.countDown());
+        for (String tx : warmupTxs) {
+            clientNode.processTransaction(tx);
+        }
+        try {
+            warmupLatch.await(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private ContentionBenchmarkSuite.BenchmarkResult extractResult(ClientBenchmark benchmark, int totalRequests) {
-        // You'll need to expose these fields or add getters in ClientBenchmark
-        // For now, assuming you add getters:
         return new ContentionBenchmarkSuite.BenchmarkResult(
                 0.0,  // skew will be set by suite
                 0,    // run number will be set by suite
@@ -448,6 +443,7 @@ public class CliMain {
         CliMain cli = new CliMain();
         System.out.println("Waiting for CLI warmup to complete...");
         cli.awaitWarmup();
+
         System.out.println("Warmup complete. CLI is ready.");
 
         int nextSetNumber = 1;

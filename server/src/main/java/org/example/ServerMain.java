@@ -80,21 +80,15 @@ public class ServerMain {
         logger.info("Modified accounts for Server {}: {}", serverId, modifiedAccounts);
         StringBuilder sb = new StringBuilder();
         if (modifiedAccounts.isEmpty()) {
-//            sb.append("No accounts have been modified. Printing balances of first 10 accounts\n");
-            for (int accountId = 1; accountId <= 10; accountId++) {
-                int key = (Config.getDatabaseSize() / Config.getServerClusterCount()) * ((serverId - 1) / Config.getServerClusterCount()) + accountId;
-                Double balance = database.get(key);
-                sb.append(key).append(" : ").append(balance).append("; ");
-            }
-            return sb.toString();
+            sb.append("No accounts have been modified.");
         } else {
 //            sb.append("Modified Accounts:\n");
             for (Integer accountId : modifiedAccounts) {
                 Double balance = database.get(accountId);
                 sb.append(accountId).append(" : ").append(balance).append("; ");
             }
-            return sb.toString();
         }
+        return sb.toString();
     }
 
     public String getOperationLog() {

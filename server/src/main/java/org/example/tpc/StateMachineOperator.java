@@ -39,8 +39,6 @@ public class StateMachineOperator {
     // Local committed flag per client request (2PC decision on this shard)
     private final ConcurrentMap<String, Boolean> committedOrAborted = new ConcurrentHashMap<>();
 
-    // Map from client request ID to sequence number (for checkpoint lookup)
-    private final ConcurrentMap<String, Long> requestIdToSeqNum = new ConcurrentHashMap<>();
 
     // Highest sequence number for which we've received an ACK and locks have been released
     private final AtomicLong highestAckReceivedAndLocksReleasedSeqNum = new AtomicLong(0L);
@@ -125,7 +123,7 @@ public class StateMachineOperator {
         CompletableFuture<Void> future = new CompletableFuture<>();
         stateMachineExecutor.execute(() -> {
             try {
-                executeAsMuchAsPossible(mode);
+                executeAsMuchAsPossible();
                 future.complete(null);
             } catch (Throwable t) {
                 logger.error("Error executing up to seqNum {}", seqNum, t);
@@ -135,7 +133,7 @@ public class StateMachineOperator {
         return future;
     }
 
-    private void executeAsMuchAsPossible(ExecutionMode mode) {
+    private void executeAsMuchAsPossible() {
         while (true) {
             long current = nextToExecute.get();
             long limit = maxSeenTarget.get();
@@ -149,7 +147,6 @@ public class StateMachineOperator {
             if (current > limit) {
                 return;
             }
-
             ServerMessage<ClientRequest> requestMessage = operationLog.getRequest(current);
             if (requestMessage == null) {
                 logger.warn("No request found at seq {}. Stopping execution.", current);
@@ -170,11 +167,11 @@ public class StateMachineOperator {
             Phase phase = operationLog.getEntry(current).phase();
 
             boolean ready =
-                    (status == OperationStatus.COMMITTED || status == OperationStatus.EXECUTED) &&
-                            (phase == Phase.COMMIT || phase == Phase.INTRA_SHARD);
+                    ((status == OperationStatus.COMMITTED || status == OperationStatus.EXECUTED) &&
+                            (phase == Phase.PREPARE || phase == Phase.INTRA_SHARD)) || phase == Phase.ABORT || phase == Phase.COMMIT;
 
             if (!ready) {
-                logger.info("Seq {} not ready to execute yet (status={}, phase={}). Stopping at this slot.",
+                logger.info("Seq {} not ready to execute (status={}, phase={}). Stopping at this seq num.",
                         current, status, phase);
                 return;
             }
@@ -196,23 +193,32 @@ public class StateMachineOperator {
                 return;
             }
 
+            ExecutionMode mode = requestTracker.getExecutionMode(requestId);
+
             WalEntry walEntry = buildWalEntry(request, mode);
             if (walEntry != null) {
                 wal.put(requestId, walEntry);
             }
 
-            OperationResult result = stateMachine.execute(request.getOperation(), mode);
+            OperationResult result = null;
+            try {
+                result = stateMachine.execute(request.getOperation(), mode);
 
-            logger.info("Executed seq {} for request {} resultCase={}",
-                    current, requestId, result.getResultCase());
+                logger.info("Executed seq {} for request {} resultCase={}",
+                        current, requestId, result.getResultCase());
+            } catch (Exception e) {
+                logger.error("Error executing seq {} for request {}", current, requestId, e);
+                return;
+            }
 
             ClientReply reply = ClientReply.newBuilder()
                     .setResult(result)
                     .setSenderId(serverId)
                     .setRequestId(request.getRequestId())
+                    .setAborted(false)
                     .build();
             ServerMessage<ClientReply> replyMessage = new ServerMessage<>(reply);
-            requestTracker.storeReply(requestMessage, replyMessage);
+            requestTracker.setReply(requestMessage, replyMessage);
 
             boolean markedInLog = operationLog.compareAndSetStatus(
                     current, OperationStatus.COMMITTED, OperationStatus.EXECUTED);
@@ -227,8 +233,6 @@ public class StateMachineOperator {
             }
 
             nextToExecute.incrementAndGet();
-            // Record the mapping from request ID to sequence number for checkpoint lookup
-            requestIdToSeqNum.put(requestId, current);
             onExecuted.accept(requestId, phase);
 
             try {
@@ -241,86 +245,6 @@ public class StateMachineOperator {
             }
         }
     }
-
-
-//    private void executeUpTo(long targetSeq, ExecutionMode mode) {
-//        while (true) {
-//            long current = nextToExecute.get();
-//            if (current > targetSeq) {
-//                logger.warn("Skipping execution for seq {} as we're already at seq {}", targetSeq, current);
-//                return;
-//            }
-//
-//            ServerMessage<ClientRequest> requestMessage = operationLog.getRequest(current);
-//            if (requestMessage == null) {
-//                logger.warn("No request found at seq {}. Stopping execution.", current);
-//                return;
-//            }
-//            ClientRequest request = requestMessage.payload();
-//            String requestId = requestMessage.getMessageId();
-//
-//            // Skip if already marked committed/executed
-//            if (Boolean.TRUE.equals(committedOrAborted.get(requestId))) {
-//                nextToExecute.incrementAndGet();
-//                logger.info("Skipping execution for seq {} request {} as it is already committed or aborted on this shard.", current, requestId);
-//                continue;
-//            }
-//
-//            OperationStatus status = operationLog.getStatus(current); // NONE/PREPARED/COMMITTED/EXECUTED/CHECKPOINTED
-//            Phase phase = operationLog.getEntry(current).phase();
-//            if (status != OperationStatus.COMMITTED && status != OperationStatus.EXECUTED && (phase == Phase.PREPARE || phase == Phase.INTRA_SHARD)) {
-//                // Not ready to execute in log order yet.
-//                logger.info("Skipping execution at seq {} for request {} as status is {} and phase is {}.",
-//                        current, requestMessage.getMessageId(), status, phase);
-//                return;
-//            }
-//
-//            if (status == OperationStatus.EXECUTED) {
-////                logger.info("Request {} at seq {} is already EXECUTED. Skipping.", requestMessage.getMessageId(), current);
-//                nextToExecute.incrementAndGet();
-//                continue;
-//            }
-//
-//            // Build WAL before applying the operation
-//            WalEntry entry = buildWalEntry(request, mode);
-//            if (entry != null) {
-//                wal.put(requestId, entry);
-//            }
-//
-//            // Execute the operation on the state machine
-//            OperationResult result =
-//                    stateMachine.execute(request.getOperation(), mode);
-//
-//            logger.info("Executed seq {} for request {} resultCase={}",
-//                    current, requestMessage.getMessageId(), result.getResultCase());
-//
-//            // Build and store client reply in the tracker
-//            ClientReply reply = ClientReply.newBuilder()
-//                    .setResult(result)
-//                    .setSenderId(serverId)
-//                    .setClientId(request.getClientId())
-//                    .setTimestamp(request.getTimestamp())
-//                    .build();
-//            ServerMessage<ClientReply> replyMessage = new ServerMessage<>(reply);
-//            requestTracker.storeReply(requestMessage, replyMessage);
-//
-//            // Mark as EXECUTED in the Paxos log atomically to ensure at-most-once
-//            boolean markedInLog = operationLog.compareAndSetStatus(
-//                    current, OperationStatus.COMMITTED, OperationStatus.EXECUTED);
-//
-//            logger.info("Marked seq {} request {} as EXECUTED in log: {}", current, requestMessage.getMessageId(), markedInLog);
-//
-//            if (!markedInLog) {
-//                logger.error("Failed to mark seq {} request {} as EXECUTED in operation log", current, requestMessage.getMessageId());
-//                return;
-//            }
-//
-//            nextToExecute.incrementAndGet();
-//
-//            // Notify listener that the operation has been executed
-//            onExecuted.accept(requestMessage.getMessageId(), operationLog.getEntry(current).phase());
-//        }
-//    }
 
     /**
      * For non-read-only operations, capture the pre-operation balances of all
@@ -379,7 +303,7 @@ public class StateMachineOperator {
                         stateMachine.restoreBalance(accountId, balance);
                     }
                 }
-                committedOrAborted.remove(requestId);
+                committedOrAborted.put(requestId, true);
                 f.complete(null);
             } catch (Throwable t) {
                 logger.error("Error undoing request: {}", requestId, t);
@@ -393,7 +317,7 @@ public class StateMachineOperator {
      * Mark the given sequence as committed on this shard and flush its WAL entry.
      * After this call, the operation is durable in the main DB and cannot be undone.
      */
-    public CompletableFuture<Void> markCommittedOrAborted(String requestId) {
+    public CompletableFuture<Void> markCommitted(String requestId) {
         CompletableFuture<Void> f = new CompletableFuture<>();
         stateMachineExecutor.execute(() -> {
             try {
@@ -414,17 +338,25 @@ public class StateMachineOperator {
     /**
      * Execute a read-only operation on the calling thread.
      */
-    public OperationResult executeReadOnly(Operation operation) {
-        switch (operation.getOpCase()) {
-            case BALANCE_REQUEST -> {
-                // BankStateMachine.executeOperation for BalanceRequest just reads from DB.
-                return stateMachine.execute(operation, ExecutionMode.BOTH);
+    public CompletableFuture<OperationResult> executeReadOnly(Operation operation) {
+        CompletableFuture<OperationResult> f = new CompletableFuture<>();
+        stateMachineExecutor.execute(() -> {
+            switch (operation.getOpCase()) {
+                case BALANCE_REQUEST -> {
+                    try {
+                        f.complete(stateMachine.execute(operation, ExecutionMode.BOTH));
+                    } catch (Exception e) {
+                        logger.error("Error executing read-only BALANCE_REQUEST operation: {}", operation, e);
+                        f.complete(null);
+                    }
+                }
+                case TRANSFER -> f.completeExceptionally(new UnsupportedOperationException(
+                        "executeReadOnly does not support TRANSFER operations"));
+                case OP_NOT_SET -> f.completeExceptionally(new IllegalArgumentException("Operation.op not set"));
             }
-            case TRANSFER -> throw new IllegalArgumentException(
-                    "executeReadOnly does not support TRANSFER operations");
-            case OP_NOT_SET -> throw new IllegalArgumentException("Operation.op not set");
-        }
-        throw new IllegalStateException("Unhandled opCase: " + operation.getOpCase());
+            f.completeExceptionally(new IllegalStateException("Unhandled opCase: " + operation.getOpCase()));
+        });
+        return f;
     }
 
     /**
@@ -439,7 +371,7 @@ public class StateMachineOperator {
      */
     public boolean tryCheckpoint(ServerMessage<ClientRequest> requestMessage) {
         String requestId = requestMessage.getMessageId();
-        Long seqNum = requestIdToSeqNum.get(requestId);
+        Long seqNum = operationLog.getSeqNumForRequest(requestId);
 
         if (seqNum == null) {
             logger.warn("No sequence number found for request {} - cannot consider for checkpoint", requestId);
@@ -540,13 +472,5 @@ public class StateMachineOperator {
             }
         });
         return f;
-    }
-
-    public void registerRequestSeqNum(String requestId, long seqNum) {
-        requestIdToSeqNum.put(requestId, seqNum);
-    }
-
-    public Long getSeqNumForRequest(String requestId) {
-        return requestIdToSeqNum.get(requestId);
     }
 }

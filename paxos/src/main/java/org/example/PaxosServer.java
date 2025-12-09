@@ -244,27 +244,13 @@ public class PaxosServer {
 
     public void triggerAccept(ServerMessage<ClientRequest> request, Phase phase) {
         long seqNum = state.acceptRequest(request, phase);
-        if (seqNum == -1L) return; // not leader anymore
-        clientRequestTimer.startIfNotRunning("handling client request to trigger accept : " + request.getMessageId());
-        try {
-            if (state.isLeader()) {
-                AcceptMessage acceptMessage = AcceptMessage.newBuilder()
-                        .setSequenceNumber(seqNum)
-                        .setBallot(state.getBallot().toProto())
-                        .setPhase(phase)
-                        .setRequest(request.payload())
-                        .build();
-                messageSender.broadcastAccept(new ServerMessage<>(acceptMessage), acceptedHandler.handler());
-            }
-        } catch (Exception e) {
-            logger.error("Error broadcasting accept messages: ", e);
-        }
+        if (seqNum == -1L) return;
+        promiseTimer.stop();
+        startTimerAndBroadcastAccept(request, phase, seqNum);
     }
 
-    public void triggerAccept(ServerMessage<ClientRequest> request, Phase phase, long seqNum) {
-        if (!state.acceptRequestWithSeqNum(request, phase, seqNum)) return;
-        promiseTimer.stop();
-        clientRequestTimer.startIfNotRunning("handling client request to trigger accept for commit phase : " + request.getMessageId());
+    private void startTimerAndBroadcastAccept(ServerMessage<ClientRequest> request, Phase phase, long seqNum) {
+        clientRequestTimer.startIfNotRunning("handling client request to trigger accept for " + phase.name() + " phase : " + request.getMessageId());
         try {
             if (state.isLeader()) {
                 AcceptMessage acceptMessage = AcceptMessage.newBuilder()
@@ -276,7 +262,7 @@ public class PaxosServer {
                 messageSender.broadcastAccept(new ServerMessage<>(acceptMessage), acceptedHandler.handler());
             }
         } catch (Exception e) {
-            logger.error("Error broadcasting accept messages during commit phase: ", e);
+            logger.error("Error broadcasting accept messages during {} phase: ", phase.name(), e);
         }
     }
 

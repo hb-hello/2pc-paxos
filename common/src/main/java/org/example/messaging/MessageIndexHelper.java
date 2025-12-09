@@ -11,6 +11,9 @@ public final class MessageIndexHelper {
         if (msg instanceof ClientRequest cr) {
             return clientRequestIndex(cr);
         }
+        if (msg instanceof ClientReply cr) {
+            return cr.getRequestId();
+        }
         String messageIndex = String.valueOf(msg.hashCode());
         if (msg instanceof AcceptMessage am) {
             messageIndex = paxosIndex(

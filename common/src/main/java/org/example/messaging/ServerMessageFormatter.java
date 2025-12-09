@@ -66,7 +66,7 @@ public final class ServerMessageFormatter {
     }
 
     private static String txIDFromRequest(ClientRequest req) {
-        return req.getClientId() + ":" + req.getTimestamp();
+        return req.getRequestId();
     }
 
     private static String formatAccept(AcceptMessage m) {
@@ -102,6 +102,7 @@ public final class ServerMessageFormatter {
         return "ClientRequest{clientId=" + m.getClientId() +
                 ", ts=" + m.getTimestamp() +
                 ", op=" + opType +
+                ", operation=" + formatOperation(m.getOperation()) +
                 ", requestId=" + m.getRequestId() +
                 "}";
     }
@@ -143,5 +144,20 @@ public final class ServerMessageFormatter {
         return "TPCAbort{requestId=" + m.getRequestId() +
                 ", sender=" + m.getSenderId() +
                 "}";
+    }
+
+    public static String formatOperation(Operation op) {
+        if (op.hasTransfer()) {
+            Transfer transfer = op.getTransfer();
+            return "Transfer{from=" + transfer.getSender() +
+                    ", to=" + transfer.getReceiver() +
+                    ", amount=" + transfer.getAmount() +
+                    "}";
+        } else if (op.hasBalanceRequest()) {
+            BalanceRequest balance = op.getBalanceRequest();
+            return "Balance{accountId=" + balance.getAccountId() + "}";
+        } else {
+            return "UnknownOperation";
+        }
     }
 }

@@ -12,6 +12,7 @@ import org.example.messaging.TPCMessageSender;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.*;
+import java.util.function.Consumer;
 
 public class MessageRetryManager {
 
@@ -31,12 +32,16 @@ public class MessageRetryManager {
     private final ConcurrentMap<String, Boolean> firstSendCommitDone = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Boolean> firstSendAbortDone = new ConcurrentHashMap<>();
 
+    private final Consumer<String> onAckReceived;
+
     public MessageRetryManager(TPCMessageSender messageSender,
                                long intervalMillis,
-                               ScheduledExecutorService scheduler) {
+                               ScheduledExecutorService scheduler,
+                               Consumer<String> onAckReceived) {
         this.messageSender = Objects.requireNonNull(messageSender, "messageSender");
         this.intervalMillis = intervalMillis;
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
+        this.onAckReceived = Objects.requireNonNull(onAckReceived, "onAckReceived");
     }
 
     // ---------- COMMIT flow ----------
@@ -164,6 +169,7 @@ public class MessageRetryManager {
         } else {
             firstSendAbortDone.remove(messageId);
         }
+        onAckReceived.accept(messageId);
     }
 
     public void shutdown() {

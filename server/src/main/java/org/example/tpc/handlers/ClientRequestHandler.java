@@ -23,6 +23,7 @@ public class ClientRequestHandler {
     private final PaxosServer paxosServer;
     private final TPCMessageSender messageSender;
     private final Consumer<ServerMessage<ClientRequest>> sendPrepare;
+    private final Consumer<ServerMessage<ClientRequest>> sendAbort;
 
     public ClientRequestHandler(int serverId,
                                 LockManager lockManager,
@@ -33,7 +34,7 @@ public class ClientRequestHandler {
                                 PaxosServer paxosServer,
                                 TPCMessageSender messageSender,
                                 Consumer<ServerMessage<ClientRequest>> sendPrepare,
-                                TPCTimer tpcTimer) {
+                                Consumer<ServerMessage<ClientRequest>> sendAbort) {
         this.serverId = serverId;
         this.lockManager = lockManager;
         this.accountIdToClusterMap = accountIdToClusterMap;
@@ -43,6 +44,7 @@ public class ClientRequestHandler {
         this.paxosServer = paxosServer;
         this.messageSender = messageSender;
         this.sendPrepare = sendPrepare;
+        this.sendAbort = sendAbort;
     }
 
     public void handle(ServerMessage<ClientRequest> request) {
@@ -94,12 +96,15 @@ public class ClientRequestHandler {
                 clientRequestTracker.markIntraShard(request);
             } else {
                 //Cross-Shard
-                sendPrepare.accept(request);
+                if (executionMode == ExecutionMode.SENDER) sendPrepare.accept(request);
                 paxosServer.triggerAccept(request, Phase.PREPARE);
             }
         } else {
             logger.info("Failed to acquire locks or insufficient balance for request {}", request);
-//            if (!clientRequestTracker.isAccepted(request)) clientRequestTracker.removeRequest(request);
+            if (executionMode == ExecutionMode.RECEIVER) {
+                sendAbort.accept(request);
+                paxosServer.triggerAccept(request, Phase.ABORT);
+            }
         }
     }
 
@@ -107,9 +112,13 @@ public class ClientRequestHandler {
         try {
             ClientRequest clientRequest = request.payload();
             Operation resultOperation = clientRequest.getOperation();
-            ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, resultOperation, accountIdToClusterMap);
 
-            OperationResult result = operator.executeReadOnly(resultOperation);
+            OperationResult result = operator.executeReadOnly(resultOperation).get();
+
+            if (result == null) {
+                logger.error("Read-only execution returned null result for request {}", request);
+                return;
+            }
 
             ClientReply reply = ClientReply.newBuilder()
                     .setResult(result)

@@ -1,9 +1,13 @@
 package org.example.tpc;
 
+import io.grpc.stub.StreamObserver;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.example.ClientReply;
 import org.example.ClientRequest;
 import org.example.Operation;
 import org.example.Phase;
+import org.example.TPCAckMessage;
 import org.example.messaging.ServerMessage;
 
 import java.util.ArrayList;
@@ -18,6 +22,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * Tracks client requests and (optionally) their replies to handle duplicates.
  */
 public class ClientRequestTracker {
+
+    private static final Logger logger = LogManager.getLogger(ClientRequestTracker.class);
 
     /**
      * One entry per logical client request.
@@ -37,8 +43,13 @@ public class ClientRequestTracker {
         // has ack been received from participant for the corresponding commit / abort
         private final AtomicBoolean ackReceived = new AtomicBoolean(false);
 
-        // has intra-cluster consensus been completed for this client request once
-        private final AtomicBoolean consensusCompleted = new AtomicBoolean(false);
+        // has intra-cluster consensus been completed for this client request for phase 1 of 2PC, i.e., PREPARE phase
+        private final AtomicBoolean consensusCompletedPhase1 = new AtomicBoolean(false);
+
+        // has intra-cluster consensus been completed for this client request for phase 2 of 2PC, i.e., COMMIT / ABORT phase
+        private final AtomicBoolean consensusCompletedPhase2 = new AtomicBoolean(false);
+        // observer to respond to participant ACKs for this request (might be set/cleared dynamically)
+        private final AtomicReference<StreamObserver<TPCAckMessage>> ackResponseObserverRef = new AtomicReference<>();
 
         private Entry(ServerMessage<ClientRequest> request, ExecutionMode mode, int otherClusterIndex) {
             this.request = request;
@@ -90,12 +101,52 @@ public class ClientRequestTracker {
             this.ackReceived.set(true);
         }
 
-        public boolean isConsensusCompleted() {
-            return consensusCompleted.get();
+        public boolean getConsensusCompletedPhase1() {
+            return consensusCompletedPhase1.get();
         }
 
-        public void setConsensusCompleted(boolean consensusCompleted) {
-            this.consensusCompleted.set(consensusCompleted);
+        public void setConsensusCompletedPhase1(boolean consensusCompletedPhase1) {
+            this.consensusCompletedPhase1.set(consensusCompletedPhase1);
+        }
+
+        public boolean getConsensusCompletedPhase2() {
+            return consensusCompletedPhase2.get();
+        }
+
+        public void setConsensusCompletedPhase2(boolean consensusCompletedPhase2) {
+            this.consensusCompletedPhase2.set(consensusCompletedPhase2);
+        }
+
+        // AckResponseObserver API on Entry
+        public StreamObserver<TPCAckMessage> getAckResponseObserver() {
+            return ackResponseObserverRef.get();
+        }
+
+        public void setAckResponseObserver(StreamObserver<TPCAckMessage> observer) {
+            ackResponseObserverRef.set(observer);
+        }
+
+        public void removeAckResponseObserver() {
+            ackResponseObserverRef.set(null);
+        }
+
+        /**
+         * Atomically fetch-and-clear the observer and send the ack message (onNext + onCompleted).
+         * Safe to call concurrently; only one caller will get the observer.
+         */
+        public void sendAckResponse(TPCAckMessage msg) {
+            StreamObserver<TPCAckMessage> obs = ackResponseObserverRef.getAndSet(null);
+            if (obs == null) return;
+            try {
+                obs.onNext(msg);
+                obs.onCompleted();
+            } catch (Throwable t) {
+                logger.error("Error while sending TPCAckMessage to observer for request {}", request.getMessageId(), t);
+                try {
+                    obs.onError(t);
+                } catch (Throwable ignore) {
+                }
+            }
         }
     }
 
@@ -117,6 +168,10 @@ public class ClientRequestTracker {
         return entries.containsKey(requestId);
     }
 
+    public ServerMessage<ClientRequest> getRequest(String requestId) {
+        return entries.get(requestId).getRequest();
+    }
+
     public void addRequest(ServerMessage<ClientRequest> request, ExecutionMode mode, int otherClusterIndex) {
         Entry newEntry = new Entry(request, mode, otherClusterIndex);
         String id = key(request);
@@ -134,8 +189,8 @@ public class ClientRequestTracker {
         markAccepted(request);
     }
 
-    public void storeReply(ServerMessage<ClientRequest> request,
-                           ServerMessage<ClientReply> reply) {
+    public void setReply(ServerMessage<ClientRequest> request,
+                         ServerMessage<ClientReply> reply) {
         Entry e = entries.get(key(request));
         if (e != null) {
             e.setReply(reply);
@@ -228,24 +283,44 @@ public class ClientRequestTracker {
 
     // ---------- Consensus completed flag API ----------
 
-    public void markConsensusCompleted(ServerMessage<ClientRequest> request) {
-        markConsensusCompleted(key(request));
+    public void markConsensusCompletedPhase1(ServerMessage<ClientRequest> request) {
+        markConsensusCompletedPhase1(key(request));
     }
 
-    public void markConsensusCompleted(String requestId) {
+    public void markConsensusCompletedPhase1(String requestId) {
         Entry e = entries.get(requestId);
         if (e != null) {
-            e.setConsensusCompleted(true);
+            e.setConsensusCompletedPhase1(true);
         }
     }
 
-    public boolean isConsensusCompleted(ServerMessage<ClientRequest> request) {
-        return isConsensusCompleted(key(request));
+    public boolean isConsensusCompletedPhase1(ServerMessage<ClientRequest> request) {
+        return isConsensusCompletedPhase1(key(request));
     }
 
-    public boolean isConsensusCompleted(String requestId) {
+    public boolean isConsensusCompletedPhase1(String requestId) {
         Entry e = entries.get(requestId);
-        return e != null && e.isConsensusCompleted();
+        return e != null && e.getConsensusCompletedPhase1();
+    }
+
+    public void markConsensusCompletedPhase2(ServerMessage<ClientRequest> request) {
+        markConsensusCompletedPhase2(key(request));
+    }
+
+    public void markConsensusCompletedPhase2(String requestId) {
+        Entry e = entries.get(requestId);
+        if (e != null) {
+            e.setConsensusCompletedPhase2(true);
+        }
+    }
+
+    public boolean isConsensusCompletedPhase2(ServerMessage<ClientRequest> request) {
+        return isConsensusCompletedPhase2(key(request));
+    }
+
+    public boolean isConsensusCompletedPhase2(String requestId) {
+        Entry e = entries.get(requestId);
+        return e != null && e.getConsensusCompletedPhase2();
     }
 
     // ---------- Phase tracking API ----------
@@ -285,7 +360,11 @@ public class ClientRequestTracker {
 
     // only be called when we receive abort from leader or send abort to participant
     public boolean markAborted(ServerMessage<ClientRequest> request) {
-        return tryTransitionPhase(entries.get(key(request)), Phase.ABORT);
+        return markAborted(key(request));
+    }
+
+    public boolean markAborted(String requestId) {
+        return tryTransitionPhase(entries.get(requestId), Phase.ABORT);
     }
 
     public boolean markIntraShard(ServerMessage<ClientRequest> request) {
@@ -307,7 +386,11 @@ public class ClientRequestTracker {
     }
 
     public boolean isAborted(ServerMessage<ClientRequest> request) {
-        Entry e = entries.get(key(request));
+        return isAborted(key(request));
+    }
+
+    public boolean isAborted(String requestId) {
+        Entry e = entries.get(requestId);
         return e != null && e.getPhase() == Phase.ABORT;
     }
 
@@ -341,10 +424,42 @@ public class ClientRequestTracker {
         }
     }
 
-    public void removeRequest(ServerMessage<ClientRequest> request) {
-        String id = key(request);
-        entries.remove(id);
-        pendingIds.remove(id);
+    // ---------- AckResponseObserver API ----------
+
+    public void setAckResponseObserver(ServerMessage<ClientRequest> request, StreamObserver<TPCAckMessage> observer) {
+        setAckResponseObserver(request.getMessageId(), observer);
+    }
+
+    public void setAckResponseObserver(String requestId, StreamObserver<TPCAckMessage> observer) {
+        Entry e = entries.get(requestId);
+        if (e != null) {
+            e.setAckResponseObserver(observer);
+        }
+    }
+
+    public StreamObserver<TPCAckMessage> getAckResponseObserver(ServerMessage<ClientRequest> request) {
+        Entry e = entries.get(key(request));
+        return e != null ? e.getAckResponseObserver() : null;
+    }
+
+    public void removeAckResponseObserver(ServerMessage<ClientRequest> request) {
+        Entry e = entries.get(key(request));
+        if (e != null) {
+            e.removeAckResponseObserver();
+        }
+    }
+
+    /**
+     * Helper to atomically send an ack response to the observer registered for the given requestId.
+     * If an observer is registered, it will be consumed (cleared) and the message sent.
+     * @param requestId client request id
+     */
+    public void sendAckResponse(String requestId) {
+        Entry e = entries.get(requestId);
+        if (e != null) {
+            TPCAckMessage msg = TPCAckMessage.newBuilder().build();
+            e.sendAckResponse(msg);
+        }
     }
 
     public String printTrackedRequests() {
@@ -354,7 +469,8 @@ public class ClientRequestTracker {
                     .append(", Accepted: ").append(entry.isAccepted())
                     .append(", Phase: ").append(entry.getPhase())
                     .append(", AckReceived: ").append(entry.isAckReceived())
-                    .append(", ConsensusCompleted: ").append(entry.isConsensusCompleted())
+                    .append(", ConsensusCompletedPhase1: ").append(entry.getConsensusCompletedPhase1())
+                    .append(", ConsensusCompletedPhase2: ").append(entry.getConsensusCompletedPhase2())
                     .append("\n");
         }
         return sb.toString();
