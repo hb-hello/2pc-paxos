@@ -178,8 +178,18 @@ public class CliMain {
             return;
         }
 
-        System.out.printf("Processing set %d with %d transactions, live nodes: %s%n",
-                setNumber, set.transactions().size(), set.liveNodes());
+        // Count only actual client requests (not F/R commands) for the benchmark latch
+        long actualRequestCount = set.transactions().stream()
+                .filter(tx -> {
+                    if (tx == null || tx.trim().isEmpty()) return false;
+                    char first = Character.toUpperCase(tx.trim().charAt(0));
+                    // Exclude F (fail) and R (recover) commands
+                    return first != 'F' && first != 'R';
+                })
+                .count();
+
+        System.out.printf("Processing set %d with %d transactions (%d requests), live nodes: %s%n",
+                setNumber, set.transactions().size(), actualRequestCount, set.liveNodes());
 
         // Fetch account→cluster mapping from DBHandler
         Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
@@ -189,7 +199,7 @@ public class CliMain {
         registerActiveClientNode(clientNode);
 
         // Create and register a benchmark to track metrics
-        int totalRequests = set.transactions().size();
+        int totalRequests = (int) actualRequestCount;
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
         clientNode.setMetricsListener(benchmark);
         this.activeBenchmark = benchmark;
@@ -204,14 +214,24 @@ public class CliMain {
             clientNode.processTransaction(tx);
         }
 
+        // Calculate timeout: allow for retries (MAX_BROADCAST_ROUNDS=3 * client timeout per round)
+        // Plus some buffer. Each request could take up to ~4 rounds * client timeout if it fails.
+        long clientTimeoutMs = Config.getClientTimeoutMillis();
+        int maxRounds = 4; // 1 leader attempt + 3 broadcast rounds
+        long perRequestMaxMs = clientTimeoutMs * maxRounds;
+        long totalTimeoutMs = Math.max(perRequestMaxMs + 2000, totalRequests * 100L + 1000);
+
         try {
-            benchmark.awaitCompletion(10, TimeUnit.SECONDS);
+            boolean completed = benchmark.awaitCompletion(totalTimeoutMs, TimeUnit.MILLISECONDS);
+            if (!completed) {
+                System.out.println("Warning: Timed out waiting for all requests to complete.");
+            }
         } catch (InterruptedException e) {
             System.out.println("Interrupted while waiting for transaction set completion.");
             return;
         }
 
-        System.out.printf("Finished sending set %d. Use option 3 to view performance stats.%n", setNumber);
+        System.out.printf("Finished set %d. Use option 3 to view performance stats.%n", setNumber);
     }
 
     /**
@@ -396,6 +416,11 @@ public class CliMain {
 
             @Override
             public void onRequestAborted(ClientRequest request, long latencyMillis) {
+                warmupLatch.countDown();
+            }
+
+            @Override
+            public void onRequestFailed(ClientRequest request, long latencyMillis) {
                 warmupLatch.countDown();
             }
         });

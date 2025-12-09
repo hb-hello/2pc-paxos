@@ -289,7 +289,7 @@ public class ReshardingPlanner {
             if (a == b) continue; // ignore self-transfers for adjacency
 
             // Undirected increment
-            System.out.println("ReshardingPlanner: adding edge " + a + " <-> " + b + " from tx: '" + tx + "'");
+//            System.out.println("ReshardingPlanner: adding edge " + a + " <-> " + b + " from tx: '" + tx + "'");
             incrementEdge(adj, a, b);
             incrementEdge(adj, b, a);
         }

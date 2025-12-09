@@ -24,9 +24,21 @@ public class ClientBenchmark implements ClientMetricsListener {
 
     private final LongAdder completed = new LongAdder();
     private final LongAdder aborted = new LongAdder();
-    private final AtomicLong totalLatencyMillis = new AtomicLong(0L);
-    private final AtomicLong minLatencyMillis = new AtomicLong(Long.MAX_VALUE);
-    private final AtomicLong maxLatencyMillis = new AtomicLong(0L);
+    private final LongAdder failed = new LongAdder();
+
+    // Latency accumulators for completed + aborted (non-failed) requests
+    private final AtomicLong totalLatencyNonFailedMillis = new AtomicLong(0L);
+    private final AtomicLong minLatencyNonFailedMillis = new AtomicLong(Long.MAX_VALUE);
+    private final AtomicLong maxLatencyNonFailedMillis = new AtomicLong(0L);
+
+    // Latency accumulators for failed requests (kept separately, not used in throughput/latency)
+    private final AtomicLong totalLatencyFailedMillis = new AtomicLong(0L);
+    private final AtomicLong minLatencyFailedMillis = new AtomicLong(Long.MAX_VALUE);
+    private final AtomicLong maxLatencyFailedMillis = new AtomicLong(0L);
+
+    // Track first and last completion times for non-failed requests (for accurate throughput)
+    private final AtomicLong firstNonFailedCompletionNanos = new AtomicLong(Long.MAX_VALUE);
+    private final AtomicLong lastNonFailedCompletionNanos = new AtomicLong(0L);
 
     private volatile long startTimeNanos;
     private volatile long endTimeNanos;
@@ -39,18 +51,23 @@ public class ClientBenchmark implements ClientMetricsListener {
         this.startTimeNanos = System.nanoTime();
     }
 
-    public void awaitCompletion(long timeout, TimeUnit unit) throws InterruptedException {
-        latch.await(timeout, unit);
+    public boolean awaitCompletion(long timeout, TimeUnit unit) throws InterruptedException {
+        boolean completed = latch.await(timeout, unit);
         this.endTimeNanos = System.nanoTime();
+        return completed;
     }
 
     @Override
     public void onRequestCompleted(ClientRequest request, long latencyMillis) {
         completed.increment();
-        totalLatencyMillis.addAndGet(latencyMillis);
+        // Update non-failed latency accumulators
+        totalLatencyNonFailedMillis.addAndGet(latencyMillis);
+        minLatencyNonFailedMillis.updateAndGet(prev -> Math.min(prev, latencyMillis));
+        maxLatencyNonFailedMillis.updateAndGet(prev -> Math.max(prev, latencyMillis));
 
-        minLatencyMillis.updateAndGet(prev -> Math.min(prev, latencyMillis));
-        maxLatencyMillis.updateAndGet(prev -> Math.max(prev, latencyMillis));
+        // Track first and last completion times for non-failed requests
+        firstNonFailedCompletionNanos.updateAndGet(prev -> Math.min(prev, System.nanoTime()));
+        lastNonFailedCompletionNanos.set(System.nanoTime());
 
         latch.countDown();
     }
@@ -58,10 +75,25 @@ public class ClientBenchmark implements ClientMetricsListener {
     @Override
     public void onRequestAborted(ClientRequest request, long latencyMillis) {
         aborted.increment();
-        totalLatencyMillis.addAndGet(latencyMillis);
+        // Aborted requests count as non-failed for throughput/latency
+        totalLatencyNonFailedMillis.addAndGet(latencyMillis);
+        minLatencyNonFailedMillis.updateAndGet(prev -> Math.min(prev, latencyMillis));
+        maxLatencyNonFailedMillis.updateAndGet(prev -> Math.max(prev, latencyMillis));
 
-        minLatencyMillis.updateAndGet(prev -> Math.min(prev, latencyMillis));
-        maxLatencyMillis.updateAndGet(prev -> Math.max(prev, latencyMillis));
+        // Track first and last completion times for non-failed requests
+        firstNonFailedCompletionNanos.updateAndGet(prev -> Math.min(prev, System.nanoTime()));
+        lastNonFailedCompletionNanos.set(System.nanoTime());
+
+        latch.countDown();
+    }
+
+    @Override
+    public void onRequestFailed(ClientRequest request, long latencyMillis) {
+        failed.increment();
+        // Track failed latencies separately (excluded from throughput/latency stats)
+        totalLatencyFailedMillis.addAndGet(latencyMillis);
+        minLatencyFailedMillis.updateAndGet(prev -> Math.min(prev, latencyMillis));
+        maxLatencyFailedMillis.updateAndGet(prev -> Math.max(prev, latencyMillis));
 
         latch.countDown();
     }
@@ -69,26 +101,51 @@ public class ClientBenchmark implements ClientMetricsListener {
     public void printResults() {
         long done = completed.sum();
         long abortedCount = aborted.sum();
-        long total = done + abortedCount;
+        long failedCount = failed.sum();
+        long total = done + abortedCount + failedCount;
+
+        // For throughput/latency we exclude failed requests
+        long nonFailedTotal = done + abortedCount;
 
         if (total == 0) {
             System.out.println("Benchmark: no requests completed or aborted.");
             return;
         }
 
-        double avgLatency = totalLatencyMillis.get() / (double) total;
-        long min = minLatencyMillis.get() == Long.MAX_VALUE ? 0 : minLatencyMillis.get();
-        long max = maxLatencyMillis.get();
+        // Compute latency stats over non-failed requests only
+        double avgLatency = nonFailedTotal > 0 ? totalLatencyNonFailedMillis.get() / (double) nonFailedTotal : 0.0;
+        long min = minLatencyNonFailedMillis.get() == Long.MAX_VALUE ? 0 : minLatencyNonFailedMillis.get();
+        long max = maxLatencyNonFailedMillis.get();
 
-        long effectiveEnd = (endTimeNanos == 0L) ? System.nanoTime() : endTimeNanos;
-        double elapsedSeconds = (effectiveEnd - startTimeNanos) / 1_000_000_000.0;
-        double throughput = elapsedSeconds > 0 ? total / elapsedSeconds : 0.0;
+        // Calculate elapsed time based on non-failed request window
+        // Use time from first non-failed completion to last non-failed completion
+        double elapsedSeconds;
+        if (nonFailedTotal > 0) {
+            long firstCompletion = firstNonFailedCompletionNanos.get();
+            long lastCompletion = lastNonFailedCompletionNanos.get();
+            if (firstCompletion != Long.MAX_VALUE && lastCompletion > 0) {
+                // Use the window from start to last non-failed completion for throughput
+                long effectiveEnd = lastCompletion;
+                elapsedSeconds = (effectiveEnd - startTimeNanos) / 1_000_000_000.0;
+            } else {
+                // Fallback to original calculation
+                long effectiveEnd = (endTimeNanos == 0L) ? System.nanoTime() : endTimeNanos;
+                elapsedSeconds = (effectiveEnd - startTimeNanos) / 1_000_000_000.0;
+            }
+        } else {
+            // No non-failed requests, use full elapsed time
+            long effectiveEnd = (endTimeNanos == 0L) ? System.nanoTime() : endTimeNanos;
+            elapsedSeconds = (effectiveEnd - startTimeNanos) / 1_000_000_000.0;
+        }
+
+        double throughput = elapsedSeconds > 0 ? (nonFailedTotal) / elapsedSeconds : 0.0;
         double abortRate = total > 0 ? (abortedCount * 100.0) / total : 0.0;
+        double failRate = total > 0 ? (failedCount * 100.0) / total : 0.0;
 
-        System.out.printf("Benchmark complete: %d total (%d completed, %d aborted) in %.3f s%n",
-                total, done, abortedCount, elapsedSeconds);
+        System.out.printf("Benchmark complete: %d total (%d completed, %d failed, %d aborted) in %.3fs%n",
+                total, done, failedCount, abortedCount, elapsedSeconds);
         System.out.printf("Throughput: %.2f requests/second%n", throughput);
-        System.out.printf("Abort rate: %.2f%%%n", abortRate);
+        System.out.printf("Abort rate: %.2f%%, Fail rate: %.2f%%%n", abortRate, failRate);
         System.out.printf("Latency (ms) - avg: %.2f, min: %d, max: %d%n",
                 avgLatency, min, max);
     }
@@ -361,40 +418,49 @@ public class ClientBenchmark implements ClientMetricsListener {
         return txs;
     }
 
-    public long getCompletedCount() {
-        return completed.sum();
-    }
-
-    public long getAbortedCount() {
-        return aborted.sum();
-    }
+    public long getCompletedCount() { return completed.sum(); }
+    public long getAbortedCount() { return aborted.sum(); }
+    public long getFailedCount() { return failed.sum(); }
+    public long getTotalCount() { return completed.sum() + aborted.sum() + failed.sum(); }
 
     public double getAbortRate() {
-        long total = completed.sum() + aborted.sum();
+        long total = getTotalCount();
         return total > 0 ? (aborted.sum() * 100.0) / total : 0.0;
     }
 
+    /**
+     * Get elapsed seconds for non-failed requests (from start to last non-failed completion).
+     */
     public double getElapsedSeconds() {
+        long nonFailed = getCompletedCount() + getAbortedCount();
+        if (nonFailed > 0) {
+            long lastCompletion = lastNonFailedCompletionNanos.get();
+            if (lastCompletion > 0) {
+                return (lastCompletion - startTimeNanos) / 1_000_000_000.0;
+            }
+        }
+        // Fallback
         long effectiveEnd = (endTimeNanos == 0L) ? System.nanoTime() : endTimeNanos;
         return (effectiveEnd - startTimeNanos) / 1_000_000_000.0;
     }
 
     public double getThroughput() {
         double elapsed = getElapsedSeconds();
-        return elapsed > 0 ? getCompletedCount() / elapsed : 0.0;
+        long nonFailed = getCompletedCount() + getAbortedCount();
+        return elapsed > 0 ? nonFailed / elapsed : 0.0;
     }
 
     public double getAvgLatencyMs() {
-        long done = completed.sum();
-        return done > 0 ? totalLatencyMillis.get() / (double) done : 0.0;
+        long nonFailed = getCompletedCount() + getAbortedCount();
+        return nonFailed > 0 ? totalLatencyNonFailedMillis.get() / (double) nonFailed : 0.0;
     }
 
     public long getMinLatencyMs() {
-        long min = minLatencyMillis.get();
+        long min = minLatencyNonFailedMillis.get();
         return min == Long.MAX_VALUE ? 0 : min;
     }
 
     public long getMaxLatencyMs() {
-        return maxLatencyMillis.get();
+        return maxLatencyNonFailedMillis.get();
     }
 }

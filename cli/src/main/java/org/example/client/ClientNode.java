@@ -222,11 +222,22 @@ public class ClientNode {
         if (ctx == null) {
             return; // already completed and removed
         }
+        ClientRequest failedRequest = null;
         synchronized (ctx) {
             if (ctx.completed) {
                 return;
             }
-            startNextBroadcastRoundLocked(ctx);
+            failedRequest = startNextBroadcastRoundLocked(ctx);
+        }
+
+        // If the request exhausted retries and failed, notify listener and cleanup outside the lock
+        if (failedRequest != null) {
+            long latency = System.currentTimeMillis() - failedRequest.getTimestamp();
+            ClientMetricsListener listener = metricsListener;
+            if (listener != null) {
+                listener.onRequestFailed(failedRequest, latency);
+            }
+            pendingRequests.remove(PendingRequestKey.of(failedRequest));
         }
     }
 
@@ -277,15 +288,21 @@ public class ClientNode {
         handleReplyFromNode(ctx, reply.getSenderId(), reply, false);
     }
 
-    private void startNextBroadcastRoundLocked(PendingRequest ctx) {
+    /**
+     * Advance broadcast rounds for a pending request. Caller must hold ctx lock.
+     * If the request has exhausted all broadcast rounds, this method marks it completed
+     * and returns the failed ClientRequest so the caller can notify listeners outside
+     * the synchronized block. Otherwise returns null.
+     */
+    private ClientRequest startNextBroadcastRoundLocked(PendingRequest ctx) {
         if (ctx.completed) {
-            return;
+            return null;
         }
         if (ctx.broadcastRound >= MAX_BROADCAST_ROUNDS) {
             logger.warn("Request {} failed after {} broadcast rounds.",
                     ctx.key(), ctx.broadcastRound);
             ctx.completed = true;
-            return;
+            return ctx.request;
         }
 
         ctx.broadcastRound++;
@@ -315,6 +332,7 @@ public class ClientNode {
         for (int nodeId : nodeIds) {
             messageSender.sendClientRequestWithDeadline(nodeId, request, deadlineMillis);
         }
+        return null;
     }
 
     private void handleFail(NodeId nodeId) {
