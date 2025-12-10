@@ -222,7 +222,7 @@ public class OperationLog {
     }
 
     public boolean hasRequestsWaitingToExecute() {
-        for (long seqNum : entries.keySet()) {
+        for (long seqNum = checkpointManager.getLatestCheckpointedSeqNum(); seqNum < nextSeqNum.get(); seqNum++) {
             OperationStatus status = entries.get(seqNum).status();
             Phase phase = entries.get(seqNum).phase();
             if (phase == Phase.PREPARE && (status != OperationStatus.EXECUTED)) {

@@ -49,7 +49,7 @@ public class ClientRequestHandler {
 
     public void handle(ServerMessage<ClientRequest> request) {
 
-        if (clientRequestTracker.hasRequest(request)) {
+        if (clientRequestTracker.isAccepted(request)) {
             logger.info("Received duplicate client request {}. Checking for stored reply.", request.getMessageId());
             ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(request);
             if (replyMessage != null) {
@@ -68,10 +68,12 @@ public class ClientRequestHandler {
         if (!request.payload().getIsReadOnly()) {
             if (paxosServer.isLeader()) handleClientRequestAsLeader(request);
             else {
-                ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, request.payload().getOperation(), accountIdToClusterMap);
-                int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
-                clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
-                logger.info("Added client request {} to tracker as non-leader with execution mode {} and otherClusterIndex {}", request.getMessageId(), executionMode.name(), otherClusterIndex);
+                if (!clientRequestTracker.hasRequest(request)) {
+                    ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, request.payload().getOperation(), accountIdToClusterMap);
+                    int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
+                    clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
+                    logger.info("Added client request {} to tracker as non-leader with execution mode {} and otherClusterIndex {}", request.getMessageId(), executionMode.name(), otherClusterIndex);
+                }
                 paxosServer.handleClientRequestAsNonLeader(request);
             }
 

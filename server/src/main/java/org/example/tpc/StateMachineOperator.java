@@ -7,6 +7,7 @@ import org.example.config.Config;
 import org.example.messaging.ServerMessage;
 import org.example.persistence.KeyValueStore;
 import org.example.state.OperationLog;
+import org.example.state.OperationLogEntry;
 import org.example.state.OperationStatus;
 import org.example.statemachine.BankStateMachine;
 
@@ -145,11 +146,12 @@ public class StateMachineOperator {
 
             // Nothing more requested to be executed.
             if (current > limit) {
+                logger.info("Execution loop ending: current {} > limit {}", current, limit);
                 return;
             }
             ServerMessage<ClientRequest> requestMessage = operationLog.getRequest(current);
             if (requestMessage == null) {
-                logger.warn("No request found at seq {}. Stopping execution.", current);
+                logger.warn("No request found at seq {} (limit={}). Stopping execution.", current, limit);
                 return;
             }
 
@@ -164,15 +166,21 @@ public class StateMachineOperator {
             }
 
             OperationStatus status = operationLog.getStatus(current);
-            Phase phase = operationLog.getEntry(current).phase();
+            OperationLogEntry entry = operationLog.getEntry(current);
+            Phase phase = entry != null ? entry.phase() : null;
+
+            if (phase == null) {
+                logger.warn("Seq {} has null phase (entry={}). Stopping execution.", current, entry);
+                return;
+            }
 
             boolean ready =
                     ((status == OperationStatus.COMMITTED || status == OperationStatus.EXECUTED) &&
                             (phase == Phase.PREPARE || phase == Phase.INTRA_SHARD)) || phase == Phase.ABORT || phase == Phase.COMMIT;
 
             if (!ready) {
-                logger.info("Seq {} not ready to execute (status={}, phase={}). Stopping at this seq num.",
-                        current, status, phase);
+                logger.info("Seq {} not ready to execute (status={}, phase={}, limit={}). Will retry when triggered.",
+                        current, status, phase, limit);
                 return;
             }
 

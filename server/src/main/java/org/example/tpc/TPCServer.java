@@ -218,17 +218,19 @@ public class TPCServer implements TPCHooks {
     }
 
     private void processPendingClientRequestsAsBackup() {
-        for (ServerMessage<ClientRequest> request : clientRequestTracker.getPendingClientRequests()) {
-            if (clientRequestTracker.getExecutionMode(request) == ExecutionMode.RECEIVER) continue;
-            logger.info("Re-handling pending client request {} as backup", request.getMessageId());
-            paxosServer.handleClientRequestAsNonLeader(request);
-        }
+        executorManager.submitMessageProcessing(() -> {
+            for (ServerMessage<ClientRequest> request : clientRequestTracker.getPendingClientRequests()) {
+                if (clientRequestTracker.getExecutionMode(request) == ExecutionMode.RECEIVER) continue;
+                logger.info("Re-handling pending client request {} as backup", request.getMessageId());
+                paxosServer.handleClientRequestAsNonLeader(request);
+            }
+        });
     }
 
     private void releaseLocks(String requestId) {
         ExecutionMode mode = clientRequestTracker.getExecutionMode(requestId);
         lockManager.releaseLock(clientRequestTracker.getOperation(requestId), mode, requestId);
-        paxosServer.refreshTimerOnExecute(requestId, lockManager.hasAnyLocks(), lockManager.getTransactionsWithLocks(), this::processPendingClientRequestsAsLeader);
+        paxosServer.refreshTimerOnExecute(requestId, lockManager.hasAnyLocks(), lockManager.getRandomTransactionWithLocks(), this::processPendingClientRequestsAsLeader);
         operator.markCommitted(requestId);
     }
 

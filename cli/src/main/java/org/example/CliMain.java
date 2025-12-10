@@ -323,23 +323,28 @@ public class CliMain {
         }
     }
 
-    private void runBenchmark(int totalRequests, double skew) {
+    private void runBenchmark(int totalRequests, double skew, double readWriteRatio, double crossShardRatio) {
         // Make sure servers are reset and active
         resetAllServers();
         activateAllServers();
 
         // Build a fresh ClientNode with current account→cluster mapping
         Map<Integer, Integer> accountToClusterIndex = dbHandler.getAccountIdToClusterIndex();
-        ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
+        ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor(), false);
         registerActiveClientNode(clientNode);
 
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
         clientNode.setMetricsListener(benchmark);
 
-        // Build intra-shard transfers evenly across shards
-        List<String> txs = ClientBenchmark.buildIntraShardTransfersWithSkew(accountToClusterIndex, totalRequests, skew);
+        // Build mixed workload with configurable ratios
+        List<String> txs = ClientBenchmark.buildMixedWorkload(accountToClusterIndex, totalRequests, skew, readWriteRatio, crossShardRatio);
 
-        System.out.printf("Starting benchmark: %d intra-shard transfers%n", totalRequests);
+        int writeCount = (int) Math.round(totalRequests * readWriteRatio);
+        int readCount = totalRequests - writeCount;
+        int crossShardCount = (int) Math.round(writeCount * crossShardRatio);
+        int intraShardCount = writeCount - crossShardCount;
+        System.out.printf("Starting benchmark: %d total requests (%d reads, %d intra-shard transfers, %d cross-shard transfers), skew=%.0f%%%n",
+                totalRequests, readCount, intraShardCount, crossShardCount, skew * 100);
 
         benchmark.start();
         for (String tx : txs) {
@@ -411,7 +416,7 @@ public class CliMain {
             throw new RuntimeException(e);
         }
 
-        ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor());
+        ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor(), false);
         registerActiveClientNode(clientNode);
 
         warmupWithTransactions(accountToClusterIndex, clientNode, 90);
@@ -691,8 +696,9 @@ public class CliMain {
                 case "10" -> {
                     System.out.println("Enter number of requests for benchmark (e.g., 300): ");
                     String reqStr = sc.nextLine().trim();
-                    int reqCount = Integer.parseInt(reqStr);
+                    int reqCount;
                     try {
+                        reqCount = Integer.parseInt(reqStr);
                         if (reqCount <= 0) {
                             System.out.println("# requests must be positive.");
                             break;
@@ -707,14 +713,49 @@ public class CliMain {
                         break;
                     }
 
+                    System.out.println("Enter read/write ratio percentage (0=all reads, 100=all writes/transfers): ");
+                    int rwPercent;
+                    try {
+                        rwPercent = Integer.parseInt(sc.nextLine().trim());
+                        if (rwPercent < 0 || rwPercent > 100) {
+                            System.out.println("Read/write ratio must be between 0 and 100.");
+                            break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid read/write ratio.");
+                        break;
+                    }
+                    double readWriteRatio = rwPercent / 100.0;
+
+                    System.out.println("Enter cross-shard ratio percentage (0=all intra-shard, 100=all cross-shard): ");
+                    int csPercent;
+                    try {
+                        csPercent = Integer.parseInt(sc.nextLine().trim());
+                        if (csPercent < 0 || csPercent > 100) {
+                            System.out.println("Cross-shard ratio must be between 0 and 100.");
+                            break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid cross-shard ratio.");
+                        break;
+                    }
+                    double crossShardRatio = csPercent / 100.0;
+
                     System.out.println("Enter skew percentage for benchmark (e.g., 40): ");
-                    int skewPercent = Integer.parseInt(sc.nextLine().trim());
-                    if (skewPercent < 0 || skewPercent > 100) {
-                        System.out.println("Skew percentage must be between 0 and 100.");
+                    int skewPercent;
+                    try {
+                        skewPercent = Integer.parseInt(sc.nextLine().trim());
+                        if (skewPercent < 0 || skewPercent > 100) {
+                            System.out.println("Skew percentage must be between 0 and 100.");
+                            break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid skew percentage.");
                         break;
                     }
                     double skew = skewPercent / 100.0;
-                    cli.runBenchmark(reqCount, skew);
+
+                    cli.runBenchmark(reqCount, skew, readWriteRatio, crossShardRatio);
                 }
                 case "11" -> {
                     System.out.println("Enter number of requests for benchmark suite (e.g., 300): ");

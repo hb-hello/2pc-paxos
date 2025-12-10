@@ -295,15 +295,15 @@ public class PaxosServer {
         }
     }
 
-    public void refreshTimerOnExecute(String requestId, boolean restart, List<String> txIds, Runnable onStoppingTimer) {
+    public void refreshTimerOnExecute(String requestId, boolean restart, String txId, Runnable onStoppingTimer) {
         if (restart) {
-            state.hasRequestsWaitingToExecute();
-            logger.info("Pending locks detected; restarting client request timer after executing request id: {}, for pending request id: {}", requestId, txIds.get(0));
-            clientRequestTimer.restart("refreshing timer on execute for pending request id: " + txIds.get(0));
+//            state.hasRequestsWaitingToExecute();
+            logger.info("Pending locks detected; restarting client request timer after executing request id: {}, for pending request id: {}", requestId, txId);
+            clientRequestTimer.restart("refreshing timer on execute for pending request id: " + txId);
         } else {
             logger.info("No pending locks to execute; stopping client request timer after executing request id: {}", requestId);
             clientRequestTimer.stop();
-            if (isLeader()) onStoppingTimer.run();
+            if (isLeader()) executorManager.submitMessageProcessing(onStoppingTimer);
         }
     }
 

@@ -184,8 +184,12 @@ public class LockManager {
         return !locks.isEmpty();
     }
 
-    public List<String> getTransactionsWithLocks() {
-        return new ArrayList<>(transactionsWithLocks);
+    public String getRandomTransactionWithLocks() {
+        Iterator<String> iterator = transactionsWithLocks.iterator();
+        if (iterator.hasNext()) {
+            return iterator.next();
+        }
+        return null;
     }
 
     /**

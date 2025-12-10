@@ -342,6 +342,222 @@ public class ClientBenchmark implements ClientMetricsListener {
     }
 
     /**
+     * Build a mixed workload with configurable read/write ratio, cross-shard ratio, and skew.
+     *
+     * @param accountToClusterIndex mapping of account IDs to their cluster index
+     * @param totalRequests         total number of requests to generate
+     * @param skew                  value between 0.0 and 1.0 controlling contention for write transactions:
+     *                              0.0 = uniform distribution (all accounts used)
+     *                              1.0 = maximum skew (only 2 accounts used per cluster)
+     * @param readWriteRatio        value between 0.0 and 1.0:
+     *                              0.0 = all requests are balance reads
+     *                              1.0 = all requests are transfers (writes)
+     * @param crossShardRatio       value between 0.0 and 1.0 (applies to transfers only):
+     *                              0.0 = all transfers are intra-shard
+     *                              1.0 = all transfers are cross-shard
+     * @return list of CSV-formatted requests:
+     *         - balance reads: "accountId" (single value)
+     *         - transfers: "sender,receiver,amount" (three values)
+     */
+    public static List<String> buildMixedWorkload(Map<Integer, Integer> accountToClusterIndex,
+                                                  int totalRequests,
+                                                  double skew,
+                                                  double readWriteRatio,
+                                                  double crossShardRatio) {
+        validateRatio(skew, "skew");
+        validateRatio(readWriteRatio, "readWriteRatio");
+        validateRatio(crossShardRatio, "crossShardRatio");
+
+        int clusterCount = Config.getServerClusterCount();
+
+        // Group accounts by cluster
+        Map<Integer, List<Integer>> accountsByCluster = groupAccountsByCluster(accountToClusterIndex);
+
+        // Sort accounts within each cluster for consistent ordering
+        for (List<Integer> accounts : accountsByCluster.values()) {
+            Collections.sort(accounts);
+        }
+
+        // Pre-compute hot pools for consistent skew across all transfer types
+        // Use Math.max(2, ...) to ensure we have at least 2 accounts for intra-shard transfers
+        Map<Integer, List<Integer>> hotPoolByCluster = computeHotPools(accountsByCluster, skew, clusterCount);
+
+        // Calculate request counts
+        int writeRequests = (int) Math.round(totalRequests * readWriteRatio);
+        int readRequests = totalRequests - writeRequests;
+        int crossShardTransfers = (int) Math.round(writeRequests * crossShardRatio);
+        int intraShardTransfers = writeRequests - crossShardTransfers;
+
+        ThreadLocalRandom rnd = ThreadLocalRandom.current();
+        List<String> requests = new ArrayList<>(totalRequests);
+
+        // Build balance read requests (uniform distribution across all accounts)
+        List<Integer> allAccounts = new ArrayList<>(accountToClusterIndex.keySet());
+        for (int i = 0; i < readRequests; i++) {
+            int accountId = allAccounts.get(rnd.nextInt(allAccounts.size()));
+            requests.add(String.valueOf(accountId));
+        }
+
+        // Build intra-shard transfer requests using shared hot pools
+        requests.addAll(buildIntraShardTransfersInternal(hotPoolByCluster, intraShardTransfers, rnd));
+
+        // Build cross-shard transfer requests using shared hot pools
+        requests.addAll(buildCrossShardTransfersInternal(hotPoolByCluster, crossShardTransfers, clusterCount, rnd));
+
+        // Shuffle all requests for random order
+        Collections.shuffle(requests, rnd);
+
+        logger.info("Built mixed workload: {} total ({} reads, {} intra-shard transfers, {} cross-shard transfers), skew={}",
+                requests.size(), readRequests, intraShardTransfers, crossShardTransfers, skew);
+        writeTransactionsToFile(requests, "benchmarks/inputs/generated_benchmark_input" + System.currentTimeMillis() + ".txt");
+        return requests;
+    }
+
+    /**
+     * Compute hot pools for each cluster based on skew.
+     * Hot pool contains the subset of accounts that will receive contention.
+     */
+    private static Map<Integer, List<Integer>> computeHotPools(Map<Integer, List<Integer>> accountsByCluster,
+                                                                double skew,
+                                                                int clusterCount) {
+        Map<Integer, List<Integer>> hotPoolByCluster = new HashMap<>();
+        for (int clusterIdx = 0; clusterIdx < clusterCount; clusterIdx++) {
+            List<Integer> accounts = accountsByCluster.get(clusterIdx);
+            if (accounts != null && accounts.size() >= 2) {
+                int numAccounts = accounts.size();
+                // Hot pool size ranges from numAccounts (skew=0) to 2 (skew=1)
+                // Need at least 2 for intra-shard transfers (sender != receiver)
+                int hotPoolSize = Math.max(2, (int) Math.round(numAccounts * (1.0 - skew)));
+                hotPoolByCluster.put(clusterIdx, new ArrayList<>(accounts.subList(0, hotPoolSize)));
+            }
+        }
+        return hotPoolByCluster;
+    }
+
+    /**
+     * Validate that a ratio parameter is between 0.0 and 1.0.
+     */
+    private static void validateRatio(double ratio, String paramName) {
+        if (ratio < 0.0 || ratio > 1.0) {
+            throw new IllegalArgumentException(paramName + " must be between 0.0 and 1.0, got: " + ratio);
+        }
+    }
+
+    /**
+     * Group account IDs by their cluster index.
+     */
+    private static Map<Integer, List<Integer>> groupAccountsByCluster(Map<Integer, Integer> accountToClusterIndex) {
+        Map<Integer, List<Integer>> accountsByCluster = new HashMap<>();
+        for (Map.Entry<Integer, Integer> e : accountToClusterIndex.entrySet()) {
+            int accountId = e.getKey();
+            int clusterIdx = e.getValue();
+            accountsByCluster
+                    .computeIfAbsent(clusterIdx, k -> new ArrayList<>())
+                    .add(accountId);
+        }
+        return accountsByCluster;
+    }
+
+    /**
+     * Build intra-shard transfers using pre-computed hot pools (internal helper, does not shuffle).
+     */
+    private static List<String> buildIntraShardTransfersInternal(Map<Integer, List<Integer>> hotPoolByCluster,
+                                                                  int totalTransfers,
+                                                                  ThreadLocalRandom rnd) {
+        if (totalTransfers == 0) {
+            return new ArrayList<>();
+        }
+
+        List<String> txs = new ArrayList<>(totalTransfers);
+
+        // Get clusters that have valid hot pools (at least 2 accounts for intra-shard)
+        List<Integer> validClusters = new ArrayList<>();
+        for (Map.Entry<Integer, List<Integer>> entry : hotPoolByCluster.entrySet()) {
+            if (entry.getValue().size() >= 2) {
+                validClusters.add(entry.getKey());
+            }
+        }
+
+        if (validClusters.isEmpty()) {
+            logger.warn("No clusters with enough accounts for intra-shard transfers");
+            return new ArrayList<>();
+        }
+
+        // Distribute transfers evenly across valid clusters
+        int basePerCluster = totalTransfers / validClusters.size();
+        int remainder = totalTransfers % validClusters.size();
+
+        int clusterIdx = 0;
+        for (int cluster : validClusters) {
+            List<Integer> hotPool = hotPoolByCluster.get(cluster);
+            int hotPoolSize = hotPool.size();
+
+            // This cluster gets basePerCluster + 1 if it's one of the first 'remainder' clusters
+            int transfersForThisCluster = basePerCluster + (clusterIdx < remainder ? 1 : 0);
+
+            for (int i = 0; i < transfersForThisCluster; i++) {
+                int senderIdx = rnd.nextInt(hotPoolSize);
+                int receiverIdx;
+                do {
+                    receiverIdx = rnd.nextInt(hotPoolSize);
+                } while (receiverIdx == senderIdx);
+
+                int sender = hotPool.get(senderIdx);
+                int receiver = hotPool.get(receiverIdx);
+                double amount = rnd.nextDouble(1.0, 10.0);
+
+                String tx = sender + "," + receiver + "," + String.format(Locale.US, "%.2f", amount);
+                txs.add(tx);
+            }
+            clusterIdx++;
+        }
+
+        return txs;
+    }
+
+    /**
+     * Build cross-shard transfers using pre-computed hot pools (internal helper, does not shuffle).
+     * Cross-shard transfers have sender and receiver in different clusters.
+     */
+    private static List<String> buildCrossShardTransfersInternal(Map<Integer, List<Integer>> hotPoolByCluster,
+                                                                  int totalTransfers,
+                                                                  int clusterCount,
+                                                                  ThreadLocalRandom rnd) {
+        if (totalTransfers == 0 || clusterCount < 2) {
+            return new ArrayList<>();
+        }
+
+        List<Integer> clusterIndices = new ArrayList<>(hotPoolByCluster.keySet());
+        if (clusterIndices.size() < 2) {
+            logger.warn("Not enough clusters with accounts for cross-shard transfers");
+            return new ArrayList<>();
+        }
+
+        List<String> txs = new ArrayList<>(totalTransfers);
+
+        for (int i = 0; i < totalTransfers; i++) {
+            // Pick two different clusters
+            int senderClusterIdx = clusterIndices.get(rnd.nextInt(clusterIndices.size()));
+            int receiverClusterIdx;
+            do {
+                receiverClusterIdx = clusterIndices.get(rnd.nextInt(clusterIndices.size()));
+            } while (receiverClusterIdx == senderClusterIdx);
+
+            List<Integer> senderHotPool = hotPoolByCluster.get(senderClusterIdx);
+            List<Integer> receiverHotPool = hotPoolByCluster.get(receiverClusterIdx);
+
+            int sender = senderHotPool.get(rnd.nextInt(senderHotPool.size()));
+            int receiver = receiverHotPool.get(rnd.nextInt(receiverHotPool.size()));
+            double amount = rnd.nextDouble(1.0, 10.0);
+
+            String tx = sender + "," + receiver + "," + String.format(Locale.US, "%.2f", amount);
+            txs.add(tx);
+        }
+
+        return txs;
+    }
+
+    /**
      * Persist a set of transactions to a newline-delimited text file.
      *
      * @param transactions list of CSV-formatted transactions
