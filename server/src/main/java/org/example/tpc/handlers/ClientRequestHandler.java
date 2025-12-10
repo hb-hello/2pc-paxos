@@ -52,7 +52,7 @@ public class ClientRequestHandler {
         if (clientRequestTracker.isAccepted(request)) {
             logger.info("Received duplicate client request {}. Checking for stored reply.", request.getMessageId());
             ServerMessage<ClientReply> replyMessage = clientRequestTracker.getReply(request);
-            if (replyMessage != null) {
+            if (replyMessage != null && !clientRequestTracker.isPrepared(request) && !clientRequestTracker.isPhaseEmpty(request)) {
                 try {
                     logger.info("Found stored reply for duplicate client request {}. Resending reply.", request.getMessageId());
                     messageSender.sendClientReply(replyMessage);
@@ -77,7 +77,10 @@ public class ClientRequestHandler {
                 }
             }
 
-        } else executeReadOnlyAndReply(request);
+        } else {
+            logger.info("Handling read-only client request {} directly.", request.getMessageId());
+            executeReadOnlyAndReply(request);
+        }
     }
 
     public void handleClientRequestAsLeader(ServerMessage<ClientRequest> request) {
@@ -115,6 +118,11 @@ public class ClientRequestHandler {
         try {
             ClientRequest clientRequest = request.payload();
             Operation resultOperation = clientRequest.getOperation();
+
+            if (lockManager.isLocked(resultOperation.getBalanceRequest().getAccountId())) {
+                logger.info("Read-only request {} cannot be executed due to existing lock held by the another txId.", request);
+                return;
+            }
 
             OperationResult result = operator.executeReadOnly(resultOperation).get();
 

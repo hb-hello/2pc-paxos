@@ -327,6 +327,7 @@ public class StateMachineOperator {
                     }
                 }
                 committedOrAborted.put(requestId, true);
+                requestTracker.removeReply(requestId);
                 f.complete(null);
             } catch (Throwable t) {
                 logger.error("Error undoing request: {}", requestId, t);

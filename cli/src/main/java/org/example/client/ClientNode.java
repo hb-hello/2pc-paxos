@@ -315,9 +315,7 @@ public class ClientNode {
                 ctx.broadcastRound, ctx.key(), ctx.clusterIndex);
 
         // Copy request and release lock before sending
-        ClientRequest request = ctx.request.toBuilder()
-                .setIsReadOnly(false)
-                .build();
+        ClientRequest request = ctx.request;
 
         PendingRequestKey key = PendingRequestKey.of(ctx.request);
 

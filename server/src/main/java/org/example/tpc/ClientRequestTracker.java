@@ -365,6 +365,11 @@ public class ClientRequestTracker {
         return true;
     }
 
+    public boolean isPhaseEmpty(ServerMessage<ClientRequest> request) {
+        Entry e = entries.get(key(request));
+        return e != null && e.getPhase() == null;
+    }
+
     public boolean markPrepared(ServerMessage<ClientRequest> request) {
         return tryTransitionPhase(entries.get(key(request)), Phase.PREPARE);
     }
@@ -447,7 +452,11 @@ public class ClientRequestTracker {
     }
 
     public void removeReply(ServerMessage<ClientRequest> request) {
-        Entry e = entries.get(request.getMessageId());
+        removeReply(key(request));
+    }
+
+    public void removeReply(String requestId) {
+        Entry e = entries.get(requestId);
         if (e != null) {
             e.setReply(null);
         }

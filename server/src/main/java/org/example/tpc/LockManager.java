@@ -63,6 +63,10 @@ public class LockManager {
         return removed;
     }
 
+    public boolean isLocked(int accountId) {
+        return locks.containsKey(accountId);
+    }
+
     /**
      * Overload: acquire locks based on the Operation and this shard's ExecutionMode.
      * For TRANSFER:
