@@ -11,7 +11,7 @@ public class ExecutorManager {
 
     // Best practice: 2x CPU cores for mixed I/O and CPU-bound tasks
     private static final int MAX_THREADS = Runtime.getRuntime().availableProcessors() * 2;
-    private static final int QUEUE_CAPACITY = 65_536; // 64K
+    private static final int QUEUE_CAPACITY = 131_072; // 64K
 
     private final ExecutorService stateExecutor;
     private final ExecutorService stateMachineExecutor;

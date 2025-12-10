@@ -1,5 +1,6 @@
 package org.example.tpc;
 
+import net.openhft.chronicle.wire.TriConsumer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
@@ -484,8 +485,17 @@ public class StateMachineOperator {
         stateMachineExecutor.execute(() -> {
             try {
                 if (getLastCheckpointedSeqNum.call() >= seqNum) f.complete(null);
-                stateMachine.applySnapshot(stateSnapshot);
-                logger.info("Applied checkpoint snapshot to state machine");
+                if (nextToExecute.get() <= seqNum) {
+                    nextToExecute.set(seqNum + 1);
+                    stateMachine.applySnapshot(stateSnapshot);
+                    logger.info("Applied checkpoint snapshot to state machine");
+                    long lastCheckpoint = getLastCheckpointedSeqNum.call();
+                    for (long s = lastCheckpoint + 1; s <= seqNum; s++) {
+                        ServerMessage<ClientRequest> request = operationLog.getRequest(s);
+                        if (!lockChecker.test(request.getMessageId())) continue;
+                        onExecuted.accept(request.getMessageId(), Phase.COMMIT);
+                    }
+                }
                 onCheckpoint.accept(seqNum, stateSnapshot);
                 f.complete(null);
             } catch (Throwable t) {

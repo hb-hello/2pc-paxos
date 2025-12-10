@@ -2,7 +2,9 @@ package org.example.tpc;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.example.ClientRequest;
 import org.example.Operation;
+import org.example.messaging.ServerMessage;
 import org.example.persistence.KeyValueStore;
 
 import java.util.*;
@@ -163,6 +165,13 @@ public class LockManager {
         for (int accountId : accountIds) {
             releaseLock(accountId, txId);
         }
+    }
+
+    public void releaseLock(ServerMessage<ClientRequest> request, ExecutionMode mode) {
+        Objects.requireNonNull(request, "request must not be null");
+        Operation operation = request.payload().getOperation();
+        String txId = request.getMessageId();
+        releaseLock(operation, mode, txId);
     }
 
     /**

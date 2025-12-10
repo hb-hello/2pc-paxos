@@ -43,3 +43,4 @@ data/*
 digest.txt
 benchmark_*.csv
 *.png
+benchmarks/*

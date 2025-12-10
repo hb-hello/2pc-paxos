@@ -17,7 +17,7 @@
 
   <Loggers>
     <!-- Ensure org.example classes are explicitly logged to the server file -->
-    <Logger name="org.example" level="error" additivity="false">
+    <Logger name="org.example" level="info" additivity="false">
       <AppenderRef ref="ServerFile" />
     </Logger>
       <Logger name="PaxosMetricsLogger" level="info" additivity="false">

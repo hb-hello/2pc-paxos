@@ -25,10 +25,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 
 import static java.lang.Thread.sleep;
 
@@ -76,7 +75,8 @@ public class CliMain {
 
     public void start() {
         try {
-            executorManager.submitListeningTask(() -> messageReceiver.startListening(() -> {}));
+            executorManager.submitListeningTask(() -> messageReceiver.startListening(() -> {
+            }));
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -379,6 +379,117 @@ public class CliMain {
         }
     }
 
+    /**
+     * Send transactions in concurrent batches over a fixed interval.
+     * - For <= 1000 requests: send as fast as possible in the current thread.
+     * - For larger runs: cut into batches, schedule each batch at fixed intervals,
+     * and send each batch concurrently using a small thread pool.
+     */
+    private void sendTransactionsBatched(ClientNode clientNode, List<String> txs) {
+        int total = txs.size();
+        if (total == 0) {
+            return;
+        }
+
+        if (total <= 1000) {
+            for (String tx : txs) {
+                clientNode.processTransaction(tx);
+            }
+            return;
+        }
+
+        // Configurable knobs
+        int batchSize = 200;                  // how many requests per batch
+        long batchIntervalMillis = 10;        // spacing between batches
+        int maxBatchThreads = 8;              // concurrency per batch
+
+        int batchCount = (total + batchSize - 1) / batchSize;
+
+        ScheduledExecutorService scheduler =
+                Executors.newSingleThreadScheduledExecutor(r -> {
+                    Thread t = new Thread(r, "batch-scheduler");
+                    t.setDaemon(true);
+                    return t;
+                });
+
+        ExecutorService batchExecutor =
+                Executors.newFixedThreadPool(maxBatchThreads, r -> {
+                    Thread t = new Thread(r, "batch-sender");
+                    t.setDaemon(true);
+                    return t;
+                });
+
+        CountDownLatch batchesDone = new CountDownLatch(batchCount);
+
+        for (int batchIndex = 0; batchIndex < batchCount; batchIndex++) {
+            final int index = batchIndex;
+            long initialDelay = index * batchIntervalMillis;
+
+            scheduler.schedule(() -> {
+                int start = index * batchSize;
+                int end = Math.min(start + batchSize, total);
+                List<String> batch = txs.subList(start, end);
+
+                // Send this batch concurrently
+                for (String tx : batch) {
+                    batchExecutor.submit(() -> clientNode.processTransaction(tx));
+                }
+                batchesDone.countDown();
+            }, initialDelay, TimeUnit.MILLISECONDS);
+        }
+
+        // Wait until all batches have been *submitted* to the batchExecutor
+        try {
+            batchesDone.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            scheduler.shutdown();
+            batchExecutor.shutdown();
+        }
+    }
+
+    /**
+     * Send transactions in concurrent batches over a fixed interval.
+     * - For <= 1000 requests: send as fast as possible in the current thread.
+     * - For larger runs: cut into batches, schedule each batch at fixed intervals,
+     * and send each batch concurrently using a small thread pool.
+     */
+    private void sendTransactionsConcurrently(ClientNode clientNode, List<String> txs) {
+        int total = txs.size();
+        if (total == 0) {
+            return;
+        }
+
+        if (total <= 1000) {
+            for (String tx : txs) {
+                clientNode.processTransaction(tx);
+            }
+            return;
+        }
+
+        int maxBatchThreads = 8;              // concurrency per batch
+
+        ExecutorService batchExecutor =
+                Executors.newFixedThreadPool(maxBatchThreads, r -> {
+                    Thread t = new Thread(r, "batch-sender");
+                    t.setDaemon(true);
+                    return t;
+                });
+
+                for (String tx : txs) {
+                    batchExecutor.submit(() -> clientNode.processTransaction(tx));
+                }
+
+                try {
+                    batchExecutor.shutdown();
+                    batchExecutor.awaitTermination(1, TimeUnit.MINUTES);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+        }
+    }
+
+
     private void runBenchmark(int totalRequests, double skew, double readWriteRatio, double crossShardRatio) {
         // Make sure servers are reset and active
         resetAllServers();
@@ -389,7 +500,7 @@ public class CliMain {
         ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor(), false);
         registerActiveClientNode(clientNode);
 
-        warmupWithTransactions(accountToClusterIndex, clientNode, 600);
+        warmupWithTransactions(accountToClusterIndex, clientNode, (int) (totalRequests + 3000));
         resetAllServers();
 
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
@@ -407,15 +518,13 @@ public class CliMain {
 
         benchmark.start();
         long sendStartNanos = System.nanoTime();
-        for (String tx : txs) {
-            clientNode.processTransaction(tx);
-        }
+        sendTransactionsConcurrently(clientNode, txs);
         long sendEndNanos = System.nanoTime();
         double sendDurationMillis = (sendEndNanos - sendStartNanos) / 1_000_000.0;
         System.out.printf("Sent %d requests in %.2f ms%n", txs.size(), sendDurationMillis);
 
         try {
-            int secondsToWait = Math.max(totalRequests / 500, 10);
+            int secondsToWait = Math.max(totalRequests / 500, 30);
             benchmark.awaitCompletion(secondsToWait, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -482,19 +591,17 @@ public class CliMain {
         ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor(), false);
         registerActiveClientNode(clientNode);
 
-        warmupWithTransactions(accountToClusterIndex, clientNode, 90);
+        warmupWithTransactions(accountToClusterIndex, clientNode, 1200);
 
         int totalRequests = transactions.size();
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
         clientNode.setMetricsListener(benchmark);
 
         benchmark.start();
-        for (String tx : transactions) {
-            clientNode.processTransaction(tx);
-        }
+        sendTransactionsBatched(clientNode, transactions);
 
         try {
-            int secondsToWait = Math.max(totalRequests / 200, 10);
+            int secondsToWait = Math.max(totalRequests / 200, 30);
             benchmark.awaitCompletion(secondsToWait, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -666,7 +773,7 @@ public class CliMain {
         CliMain cli = new CliMain();
         System.out.println("Waiting for CLI warmup to complete...");
         cli.awaitWarmupWithPings();
-        cli.warmupWithTransactions(180);
+        cli.warmupWithTransactions(1800);
         System.out.println("Warmup complete. CLI is ready.");
 
         int currentSet = 1;
