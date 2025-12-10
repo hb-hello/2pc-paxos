@@ -9,10 +9,11 @@ option java_package = "org.example";
 option java_multiple_files = true;
 
 service TPCService {
-  rpc TPCPrepare (TPCPrepareMessage) returns (google.protobuf.Empty) {};
+  rpc TPCPrepare (TPCPrepareMessage) returns (TPCAckMessage) {};
   rpc TPCPrepared (TPCPreparedMessage) returns (google.protobuf.Empty) {};
   rpc TPCCommit (TPCCommitMessage) returns (TPCAckMessage) {};
   rpc TPCAbort (TPCAbortMessage) returns (TPCAckMessage) {};
+  rpc LeaderElected (NewLeader) returns (google.protobuf.Empty) {};
 
   rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {};
 }
@@ -38,4 +39,8 @@ message TPCAbortMessage {
 }
 
 message TPCAckMessage {
+}
+
+message NewLeader {
+  int32 sender_id = 1;
 }

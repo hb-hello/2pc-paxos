@@ -190,10 +190,19 @@ public class OperationLog {
 
             Ballot existingBallot = oldEntry.ballot();
             if (existingBallot != null && existingBallot.isGreaterThan(ballot)) {
+                logger.warn("Cannot overwrite entry at seqNum {} with lower ballot: existing {}, new {}",
+                        seqNum, existingBallot, ballot);
                 return oldEntry;
             }
 
             if (order(status) <= order(oldEntry.status()) && phase == oldEntry.phase()) {
+                logger.warn("Status/phase change for seqNum {} not allowed: existing status {}, phase {}; new status {}, phase {}",
+                        seqNum, oldEntry.status(), oldEntry.phase(), status, phase);
+                return oldEntry;
+            }
+
+            if (phase != oldEntry.phase() && (oldEntry.phase() == Phase.COMMIT || oldEntry.phase() == Phase.ABORT)) {
+                logger.warn("Cannot change phase from {} to {} for seqNum {}", oldEntry.phase(), phase, seqNum);
                 return oldEntry;
             }
 

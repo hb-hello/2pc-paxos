@@ -234,10 +234,17 @@ public class PaxosState {
         if (isLeader()) {
             Long seqNum = getSeqNumForRequest(request.getMessageId());
             if (seqNum != null) {
-                if (operationLog.setOperationWithStatus(seqNum, request, ballot, OperationStatus.ACCEPTED, phase))
+                if (operationLog.setOperationWithStatus(seqNum, request, ballot, OperationStatus.ACCEPTED, phase)) {
+                    logger.info("Server {} re-accepted request {} at seqNum {}", serverId, request.getMessageId(), seqNum);
                     return seqNum;
-            } else return operationLog.addOperationWithStatus(request, ballot, OperationStatus.ACCEPTED, phase);
-        }
+                }
+                logger.info("Server {} failed to re-accept request {} at seqNum {}", serverId, request.getMessageId(), seqNum);
+            } else {
+                long seqNumAdded = operationLog.addOperationWithStatus(request, ballot, OperationStatus.ACCEPTED, phase);
+                logger.info("Server {} accepted new request {} at seqNum {}", serverId, request.getMessageId(), seqNumAdded);
+                return seqNumAdded;
+            }
+        } else logger.info("Server {} is not leader; cannot accept request {}", serverId, request.getMessageId());
         return -1L;
     }
 

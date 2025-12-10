@@ -65,10 +65,10 @@ public final class ServerMessageFormatter {
                 "}";
     }
 
-    private static String formatNewViewDetailed(NewViewMessage m) {
+    public static String formatNewViewDetailed(NewViewMessage m) {
         StringBuilder sb = new StringBuilder();
-        sb.append(formatNewView(m));
-        sb.append(", AcceptMessages=[");
+        sb.append("NewView{ballot=<").append(m.getBallot().getInstance()).append(", ").append(m.getBallot().getSenderId()).append(">, acceptMessageLogCount=").append(m.getAcceptLogCount()).append(", commitMessageLogCount=").append(m.getCommitLogCount()).append("}");
+        sb.append(",\nAcceptMessages=[");
         for (AcceptMessage am : m.getAcceptLogList()) {
             sb.append("\n");
             sb.append(formatAccept(am)).append(", ");
@@ -76,9 +76,9 @@ public final class ServerMessageFormatter {
         sb.append("],\nCommitMessages=[");
         for (CommitMessage cm : m.getCommitLogList()) {
             sb.append("\n");
-            sb.append(formatCommit(cm)).append(", ");
+            sb.append(formatCommit(cm)).append(",");
         }
-        sb.append("]");
+        sb.append("\n]");
         return sb.toString();
     }
 

@@ -88,6 +88,7 @@ public class ClientRequestHandler {
             logger.info("Added client request {} to tracker as leader with execution mode {} and otherClusterIndex {}", request.getMessageId(), executionMode.name(), otherClusterIndex);
         }
 
+        if (clientRequestTracker.isAccepted(request)) return; // to avoid duplicate execution
         if (lockManager.acquireLockAndCheckBalance(clientRequest.getOperation(), executionMode, request.getMessageId(), database)) {
             if (!clientRequestTracker.compareAndMarkAccepted(request)) return; // to avoid duplicate execution
             if (executionMode == ExecutionMode.BOTH) {
@@ -102,8 +103,8 @@ public class ClientRequestHandler {
         } else {
             logger.info("Failed to acquire locks or insufficient balance for request {}", request);
             if (executionMode == ExecutionMode.RECEIVER) {
-                sendAbort.accept(request);
                 paxosServer.triggerAccept(request, Phase.ABORT);
+//                sendAbort.accept(request);
             }
         }
     }

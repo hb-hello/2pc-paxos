@@ -1,8 +1,10 @@
 package org.example.tpc.handlers;
 
+import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.ClientRequest;
+import org.example.TPCAckMessage;
 import org.example.TPCPrepareMessage;
 import org.example.messaging.ServerMessage;
 import org.example.tpc.ClientRequestTracker;
@@ -27,10 +29,12 @@ public class PrepareHandler {
         this.requestHandler = requestHandler;
     }
 
-    public void handle(ServerMessage<TPCPrepareMessage> prepare) {
+    public void handle(ServerMessage<TPCPrepareMessage> prepare, StreamObserver<TPCAckMessage> responseObserver) {
         ServerMessage<ClientRequest> request = new ServerMessage<>(prepare.payload().getClientRequest());
 
         if (clientRequestTracker.isAccepted(request)) {
+            responseObserver.onNext(TPCAckMessage.newBuilder().build());
+            responseObserver.onCompleted();
             logger.info("Received duplicate prepare for client request {}", request.getMessageId());
             if (clientRequestTracker.isPrepared(request) || clientRequestTracker.isCommitted(request)) {
                 logger.info("Client request {} is already prepared / committed. Resending prepared message.", request.getMessageId());

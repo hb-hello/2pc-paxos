@@ -1,5 +1,6 @@
 package org.example;
 
+import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.LoggerContext;
@@ -23,6 +24,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -46,6 +49,8 @@ public class CliMain {
     private volatile ClientNode activeClientNode;
     private volatile ClientBenchmark activeBenchmark;
 
+    private final Set<String> newViews;
+
     public CliMain() {
         // Instantiate DBHandler so CLI commands can query DB contents
         this.executorManager = new ExecutorManager(Config.getNodes().size() - 1);
@@ -55,6 +60,8 @@ public class CliMain {
         CLIServiceClient cliServiceClient = new CLIServiceClient(this);
         this.clientServiceClient = new ClientServiceClient(this);
         this.messageReceiver = new MessageReceiver(0, Config.getClientPort(), List.of(cliServiceClient, clientServiceClient));
+
+        this.newViews = ConcurrentHashMap.newKeySet();
 
         // Pre-load all transaction sets from CSV
         try {
@@ -283,8 +290,34 @@ public class CliMain {
     }
 
     private void fetchAndPrintNewView() {
+        StreamObserver<CLIResponse> responseObserver = new StreamObserver<>() {
+            @Override
+            public void onNext(CLIResponse cliResponse) {
+                String body = cliResponse.getCliResponse();
+                if (!body.isEmpty()) {
+                    newViews.add(body);
+//                    System.out.println("Received new view info");
+                }
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+                System.out.println("Error fetching new view information: " + throwable.getMessage());
+            }
+
+            @Override
+            public void onCompleted() {
+                // No-op
+            }
+        };
         try {
-            cliMessageSender.printNewView();
+            newViews.clear();
+            cliMessageSender.getNewViews(responseObserver);
+            StringBuilder sb = new StringBuilder();
+            for (String newView : newViews.stream().sorted().toList()) {
+                sb.append(newView).append("\n\n");
+            }
+            System.out.println("New Views from servers:\n\n" + sb.toString());
         } catch (Exception e) {
             System.out.println("Error fetching new view information: " + e.getMessage());
         }

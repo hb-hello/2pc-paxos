@@ -211,14 +211,16 @@ public class StateMachineOperator {
                 return;
             }
 
-            ClientReply reply = ClientReply.newBuilder()
-                    .setResult(result)
-                    .setSenderId(serverId)
-                    .setRequestId(request.getRequestId())
-                    .setAborted(false)
-                    .build();
-            ServerMessage<ClientReply> replyMessage = new ServerMessage<>(reply);
-            requestTracker.setReply(requestMessage, replyMessage);
+            if (mode != ExecutionMode.RECEIVER) {
+                ClientReply reply = ClientReply.newBuilder()
+                        .setResult(result)
+                        .setSenderId(serverId)
+                        .setRequestId(request.getRequestId())
+                        .setAborted(false)
+                        .build();
+                ServerMessage<ClientReply> replyMessage = new ServerMessage<>(reply);
+                requestTracker.setReply(requestMessage, replyMessage);
+            }
 
             boolean markedInLog = operationLog.compareAndSetStatus(
                     current, OperationStatus.COMMITTED, OperationStatus.EXECUTED);
@@ -235,14 +237,26 @@ public class StateMachineOperator {
             nextToExecute.incrementAndGet();
             onExecuted.accept(requestId, phase);
 
-            try {
-                if (highestAckReceivedAndLocksReleasedSeqNum.get() <= getLastCheckpointedSeqNum.call() && current % Config.getCheckpointInterval() == 0) {
-                    onCheckpoint.accept(current, stateMachine.snapshot());
+            triggerCheckpoint(current);
+        }
+    }
+
+    private void triggerCheckpoint(long current) {
+        try {
+            if (current % Config.getCheckpointInterval() == 0) {
+                long latestCheckpoint = getLastCheckpointedSeqNum.call();
+                for (String requestId : requestTracker.getRequestsWaitingForAck()) {
+                    long seqNum = operationLog.getSeqNumForRequest(requestId);
+                    if (seqNum > latestCheckpoint && seqNum <= current) {
+                        // Some request beyond the last checkpoint is still waiting for ACK
+                        return;
+                    }
                 }
-            } catch (Exception e) {
-                logger.error("Error checking last checkpointed seq num during execution", e);
-                return;
+                onCheckpoint.accept(current, stateMachine.snapshot());
             }
+        } catch (Exception e) {
+            logger.error("Error checking last checkpointed seq num during execution", e);
+            return;
         }
     }
 
@@ -364,7 +378,7 @@ public class StateMachineOperator {
      * A checkpoint is triggered if:
      * 1. We have a recorded sequence number for this request
      * 2. All requests in the interval (highestAckReceivedAndLocksReleasedSeqNum+1 to nextCheckpointTarget)
-     *    have received their ACKs (if cross-shard) and have released their locks
+     * have received their ACKs (if cross-shard) and have released their locks
      *
      * @param requestMessage the client request for which we received an ACK
      * @return true if a checkpoint was triggered, false otherwise

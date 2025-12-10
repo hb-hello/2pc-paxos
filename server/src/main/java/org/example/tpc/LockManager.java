@@ -33,6 +33,10 @@ public class LockManager {
             transactionsWithLocks.add(txId);
             return true;
         }
+        if (!existing.equals(txId)) {
+            logger.warn("Lock on accountId={} is already held by txId={}; cannot acquire for txId={}",
+                    accountId, existing, txId);
+        }
         return existing.equals(txId);
     }
 
@@ -42,6 +46,10 @@ public class LockManager {
      */
     public boolean releaseLock(int accountId, String txId) {
         Objects.requireNonNull(txId, "txId must not be null");
+        if (!locks.containsKey(accountId)) {
+            logger.info("No lock exists on accountId={} to release for txId={}", accountId, txId);
+            return true;
+        }
         boolean removed = locks.remove(accountId, txId);
         if (removed) {
             // Check if this txId still holds any other locks
@@ -49,6 +57,7 @@ public class LockManager {
                 transactionsWithLocks.remove(txId);
             }
         }
+        if (!removed) logger.warn("Failed to release lock on accountId={} for txId={}: not held by this transaction", accountId, txId);
         return removed;
     }
 
@@ -173,6 +182,10 @@ public class LockManager {
             logger.info("Current locks held: {}", locks.values().toArray());
         }
         return !locks.isEmpty();
+    }
+
+    public List<String> getTransactionsWithLocks() {
+        return new ArrayList<>(transactionsWithLocks);
     }
 
     /**

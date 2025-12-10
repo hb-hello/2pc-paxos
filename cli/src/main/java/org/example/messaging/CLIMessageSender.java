@@ -2,6 +2,7 @@ package org.example.messaging;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.protobuf.Empty;
+import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
@@ -13,7 +14,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
 
 public class CLIMessageSender extends MessageSender {
     private static final Logger logger = LogManager.getLogger(CLIMessageSender.class);
@@ -117,32 +120,78 @@ public class CLIMessageSender extends MessageSender {
         }
     }
 
-    public void printNewView() {
-        List<String> responses = new ArrayList<>();
-        for (int serverId = 1; serverId <= Config.getServerCount(); serverId++) {
+    public void getNewViews(StreamObserver<CLIResponse> responseObserver) {
+        int serverCount = Config.getServerCount();
+        CountDownLatch latch = new CountDownLatch(serverCount);
+        java.util.concurrent.atomic.AtomicReference<Throwable> firstError = new java.util.concurrent.atomic.AtomicReference<>();
+
+        for (int serverId = 1; serverId <= serverCount; serverId++) {
             try {
-                CLIResponse resp = stubManager.getCLIBlockingStub(serverId).getNewViews(Empty.getDefaultInstance());
-                if (resp != null) {
-                    String body = resp.getCliResponse();
-                    if (body != null && !body.isEmpty()) {
-                        responses.add(body);
+                // Wrap the provided observer so we can detect completion per-stream
+                StreamObserver<CLIResponse> wrapper = new StreamObserver<>() {
+                    @Override
+                    public void onNext(CLIResponse value) {
+                        try {
+                            responseObserver.onNext(value);
+                        } catch (Throwable t) {
+                            logger.warn("Wrapped responseObserver.onNext threw: {}", t.getMessage());
+                            firstError.compareAndSet(null, t);
+                        }
                     }
-                }
+
+                    @Override
+                    public void onError(Throwable t) {
+                        firstError.compareAndSet(null, t);
+                        latch.countDown();
+                    }
+
+                    @Override
+                    public void onCompleted() {
+                        latch.countDown();
+                    }
+                };
+
+                stubManager.getCLIAsyncStub(serverId).getNewViews(Empty.getDefaultInstance(), wrapper);
             } catch (Exception e) {
-                logger.warn("Failed to fetch new view from server {}: {}", serverId, e.getMessage());
+                // If one individual call fails to start, record the error and count down so latch can proceed
+                logger.warn("Failed to start getNewViews stream for server {}: {}", serverId, e.getMessage());
+                firstError.compareAndSet(null, e);
+                latch.countDown();
             }
         }
 
-        if (responses.isEmpty()) {
-            System.out.println("No new view information available from servers.");
+        // Block until all streams complete or timeout. Use a safe default timeout to avoid hanging indefinitely.
+        boolean finished = false;
+        try {
+            finished = latch.await(Math.max(5, Config.getClientTimeoutMillis() / 1000), TimeUnit.SECONDS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            firstError.compareAndSet(null, ie);
+            finished = false;
+        }
+
+        // Deliver a single terminal signal to the provided observer: either onError (first seen) or onCompleted
+        Throwable err = firstError.get();
+        if (err != null) {
+            try {
+                responseObserver.onError(err);
+            } catch (Throwable ignore) {
+            }
             return;
         }
 
-        // Sort full response blocks and print them consecutively
-        Collections.sort(responses);
-        System.out.println("Unified New Views (sorted):");
-        for (String block : responses) {
-            System.out.println(block);
+        if (!finished) {
+            RuntimeException rte = new RuntimeException("Timed out waiting for getNewViews streams to complete");
+            try {
+                responseObserver.onError(rte);
+            } catch (Throwable ignore) {
+            }
+            return;
+        }
+
+        try {
+            responseObserver.onCompleted();
+        } catch (Throwable ignore) {
         }
     }
 }

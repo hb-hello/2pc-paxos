@@ -1,6 +1,8 @@
 package org.example.tpc;
 
 import io.grpc.BindableService;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -20,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Stream;
 
 public class TPCServer implements TPCHooks {
@@ -47,6 +50,8 @@ public class TPCServer implements TPCHooks {
     private final PrepareHandler prepareHandler;
     private final PreparedHandler preparedHandler;
 
+    private final Set<NewViewMessage> newViews;
+
     public TPCServer(int serverId, CLIServiceServer cliServiceServer, ExecutorManager executorManager, KeyValueStore<Double> database) {
         this.serverId = serverId;
         this.leaderMap = new ConcurrentHashMap<>();
@@ -60,7 +65,7 @@ public class TPCServer implements TPCHooks {
         this.database = database;
         this.accountIdToClusterMap = database.getAllClusterIds();
         this.clientRequestTracker = new ClientRequestTracker();
-        this.tpcTimer = new TPCTimer(Config.getServerTimeoutMillis() * 3L, executorManager.getTimerExecutor(), this::tpcTimerCallback);
+        this.tpcTimer = new TPCTimer(Config.getServerTimeoutMillis() / 2L, executorManager.getTimerExecutor(), this::tpcTimerCallback);
 
         this.paxosServer = new PaxosServer(serverId, executorManager, this);
         this.cliServiceServer = cliServiceServer;
@@ -80,7 +85,7 @@ public class TPCServer implements TPCHooks {
 
         // this will perform warmup
         this.messageSender = new TPCMessageSender(serverId, executorManager.getNetworkExecutor());
-        this.retryManager = new MessageRetryManager(messageSender, Config.getServerTimeoutMillis() * 2L, executorManager.getRetryExecutor(), clientRequestTracker::markAckReceived);
+        this.retryManager = new MessageRetryManager(messageSender, Config.getServerTimeoutMillis() / 2L, executorManager.getRetryExecutor(), clientRequestTracker::markAckReceived);
 
         this.clientRequestHandler = new ClientRequestHandler(
                 serverId,
@@ -96,6 +101,8 @@ public class TPCServer implements TPCHooks {
         );
         this.prepareHandler = new PrepareHandler(clientRequestTracker, this::sendPrepared, this::sendAbort, this::handleClientRequest);
         this.preparedHandler = new PreparedHandler(tpcTimer, clientRequestTracker, this::triggerPaxos);
+
+        this.newViews = ConcurrentHashMap.newKeySet();
 
         logger.info("TPCServer {} initialized.", serverId);
     }
@@ -135,9 +142,14 @@ public class TPCServer implements TPCHooks {
         executorManager.submitMessageProcessing(() -> clientRequestHandler.handle(request));
     }
 
-    public void handlePrepare(ServerMessage<TPCPrepareMessage> message) {
+    public void handlePrepare(ServerMessage<TPCPrepareMessage> message, StreamObserver<TPCAckMessage> responseObserver) {
         leaderMap.put(Config.getServerClusterIndex(message.payload().getSenderId()), message.payload().getSenderId());
-        handleClientRequest(new ServerMessage<>(message.payload().getClientRequest()));
+        if (!paxosServer.isLeader()) paxosServer.initiateLeaderElection();
+        prepareHandler.handle(message, responseObserver);
+        if (messageSender.isActive()) {
+            responseObserver.onNext(TPCAckMessage.newBuilder().build());
+            responseObserver.onCompleted();
+        }
     }
 
     public void handlePrepared(ServerMessage<TPCPreparedMessage> message) {
@@ -164,7 +176,8 @@ public class TPCServer implements TPCHooks {
     public void handleAbort(ServerMessage<TPCAbortMessage> message, StreamObserver<TPCAckMessage> responseObserver) {
         leaderMap.put(Config.getServerClusterIndex(message.payload().getSenderId()), message.payload().getSenderId());
         String requestId = message.payload().getRequestId();
-        if(clientRequestTracker.isAborted(requestId)) {
+        boolean isReceiver = clientRequestTracker.getExecutionMode(requestId) == ExecutionMode.RECEIVER;
+        if(isReceiver && clientRequestTracker.isAborted(requestId)) {
             // idempotent handling
             logger.info("Received duplicate TPC abort message for already committed requestId {}", requestId);
             TPCAckMessage ackMessage = TPCAckMessage.newBuilder().build();
@@ -173,18 +186,32 @@ public class TPCServer implements TPCHooks {
             return;
         }
         triggerPaxos(clientRequestTracker.getRequest(requestId), Phase.ABORT);
-        clientRequestTracker.setAckResponseObserver(requestId, responseObserver);
+        if (isReceiver) clientRequestTracker.setAckResponseObserver(requestId, responseObserver);
+        else {
+            clientRequestTracker.markAckReceived(requestId);
+            tpcTimer.stop(requestId);
+        }
+    }
+
+    public void handleLeaderElected(NewLeader message) {
+        int newLeaderId = message.getSenderId();
+        int clusterIndex = Config.getServerClusterIndex(newLeaderId);
+        leaderMap.put(clusterIndex, newLeaderId);
+        logger.info("Updated leader for cluster {} to server {}", clusterIndex, newLeaderId);
+        executorManager.submitMessageProcessing(() -> coordinateRequestsForOtherCluster(clusterIndex));
     }
 
     private void tpcTimerCallback(ServerMessage<ClientRequest> request) {
         logger.warn("TPC Server {} detected liveness timeout. Taking appropriate action.", serverId);
         if (clientRequestTracker.markAborted(request)) {
+            logger.info("TPC timeout: Triggering Paxos for aborting request {}", request.getMessageId());
             triggerPaxos(request, Phase.ABORT);
         }
     }
 
     private void processPendingClientRequestsAsLeader() {
         for (ServerMessage<ClientRequest> request : clientRequestTracker.getPendingClientRequests()) {
+            if (clientRequestTracker.getExecutionMode(request) == ExecutionMode.RECEIVER) continue;
             logger.info("Re-handling pending client request {} as leader", request.getMessageId());
             clientRequestHandler.handleClientRequestAsLeader(request);
         }
@@ -192,6 +219,7 @@ public class TPCServer implements TPCHooks {
 
     private void processPendingClientRequestsAsBackup() {
         for (ServerMessage<ClientRequest> request : clientRequestTracker.getPendingClientRequests()) {
+            if (clientRequestTracker.getExecutionMode(request) == ExecutionMode.RECEIVER) continue;
             logger.info("Re-handling pending client request {} as backup", request.getMessageId());
             paxosServer.handleClientRequestAsNonLeader(request);
         }
@@ -200,7 +228,7 @@ public class TPCServer implements TPCHooks {
     private void releaseLocks(String requestId) {
         ExecutionMode mode = clientRequestTracker.getExecutionMode(requestId);
         lockManager.releaseLock(clientRequestTracker.getOperation(requestId), mode, requestId);
-        paxosServer.refreshTimerOnExecute(requestId, lockManager.hasAnyLocks());
+        paxosServer.refreshTimerOnExecute(requestId, lockManager.hasAnyLocks(), lockManager.getTransactionsWithLocks(), this::processPendingClientRequestsAsLeader);
         operator.markCommitted(requestId);
     }
 
@@ -208,7 +236,7 @@ public class TPCServer implements TPCHooks {
         if (phase != Phase.PREPARE) {
             releaseLocks(requestId);
             try {
-                if (paxosServer.isLeader()) {
+                if (paxosServer.isLeader() && clientRequestTracker.getExecutionMode(requestId) != ExecutionMode.RECEIVER) {
                     ServerMessage<ClientReply> reply;
                     if (phase == Phase.ABORT) {
                         reply = new ServerMessage<>(ClientReply.newBuilder()
@@ -222,8 +250,6 @@ public class TPCServer implements TPCHooks {
                     } else {
                         logger.error("No reply found for committed request {}", requestId);
                     }
-                    if (!lockManager.hasAnyLocks())
-                        executorManager.submitMessageProcessing(this::processPendingClientRequestsAsLeader);
                 }
             } catch (Exception e) {
                 logger.error("Error while sending client reply for request {}: {}", requestId, e.getMessage());
@@ -242,13 +268,41 @@ public class TPCServer implements TPCHooks {
                         .setClientRequest(request.payload())
                         .setSenderId(serverId)
                         .build();
-                messageSender.sendPrepare(otherClusterLeaderId, new ServerMessage<>(tpcPrepareMessage));
-                tpcTimer.start(request);
+                sendPrepareWithAckHandler(otherClusterLeaderId, tpcPrepareMessage);
             } else
                 logger.error("No other cluster index found while sending prepare for request {}", request.getMessageId());
         } catch (Exception e) {
             logger.error("Error while sending prepare for request {}: {}", request.getMessageId(), e.getMessage());
         }
+    }
+
+    private void sendPrepareWithAckHandler(int otherClusterLeaderId, TPCPrepareMessage tpcPrepareMessage) {
+        StreamObserver<TPCAckMessage> ackObserver = new StreamObserver<>() {
+            @Override
+            public void onNext(TPCAckMessage value) {
+                tpcTimer.start(new ServerMessage<>(tpcPrepareMessage.getClientRequest()));
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                if (t instanceof StatusRuntimeException) {
+                    StatusRuntimeException sre = (StatusRuntimeException) t;
+                    if (sre.getStatus().getCode() == Status.Code.DEADLINE_EXCEEDED) {
+                        logger.error("DEADLINE_EXCEEDED error: {}", sre.getMessage());
+                        messageSender.broadcastPrepareToCluster(otherClusterLeaderId, new ServerMessage<>(tpcPrepareMessage));
+                        tpcTimer.start(new ServerMessage<>(tpcPrepareMessage.getClientRequest()));
+                    } else {
+                        logger.error("gRPC error: {} - {}", sre.getStatus().getCode(), sre.getMessage());
+                    }
+                } else logger.error("Error while waiting for TPC Prepare ack: {}", t.getMessage());
+            }
+
+            @Override
+            public void onCompleted() {
+                // No action needed on completed
+            }
+        };
+        messageSender.sendPrepare(otherClusterLeaderId, new ServerMessage<>(tpcPrepareMessage), ackObserver);
     }
 
     // only done by participant i.e., in receive mode
@@ -276,9 +330,11 @@ public class TPCServer implements TPCHooks {
 
     // only done by coordinator i.e., in send mode
     private void markCommittedAndSend(String requestId) {
-        releaseLocksAndSendReply(requestId, Phase.COMMIT);
+        executorManager.submitMessageProcessing(() -> releaseLocksAndSendReply(requestId, Phase.COMMIT));
         clientRequestTracker.markCommitted(requestId);
-        sendCommit(requestId);
+        if (clientRequestTracker.isAckReceived(requestId)) logger.info("Ack already received for request {}, not sending commit again", requestId);
+        else logger.info("Sending TPC commit for request {}", requestId);
+        if (!clientRequestTracker.isAckReceived(requestId)) sendCommit(requestId);
     }
 
     private void markCommittedWithoutSending(String requestId) {
@@ -302,7 +358,7 @@ public class TPCServer implements TPCHooks {
     private void markAbortedAndSend(ServerMessage<ClientRequest> request) {
         releaseLocksAndSendReply(request.getMessageId(), Phase.ABORT);
         clientRequestTracker.markAborted(request);
-        sendAbort(request);
+        if (!clientRequestTracker.isAckReceived(request)) sendAbort(request);
     }
 
     // can be done by participant only i.e., receive mode
@@ -325,6 +381,25 @@ public class TPCServer implements TPCHooks {
             else messageSender.sendAbortWithoutResponse(otherClusterLeaderId, new ServerMessage<>(tpcAbortMessage));
         } else logger.error("No other cluster index found while sending abort for request {}",
                 request.getMessageId());
+    }
+
+    private void coordinateRequestsForOtherCluster(int otherClusterIndex) {
+        if (!paxosServer.isLeader()) return;
+        Set<String> requests = clientRequestTracker.getRequestsForOtherCluster(otherClusterIndex);
+        for (String requestId : requests) {
+            if (!clientRequestTracker.isAccepted(requestId)) continue;
+            ServerMessage<ClientRequest> request = clientRequestTracker.getRequest(requestId);
+            if (!clientRequestTracker.isPrepared(requestId)) {
+                sendPrepare(request);
+                continue;
+            }
+            if (clientRequestTracker.isAckReceived(requestId)) continue;
+            if (clientRequestTracker.isCommitted(requestId)) {
+                sendCommit(requestId);
+                continue;
+            }
+            if (clientRequestTracker.isAborted(requestId)) sendAbort(request);
+        }
     }
 
     // ---------- TPCHooks implementation ----------
@@ -426,25 +501,23 @@ public class TPCServer implements TPCHooks {
     public void onNewClientRequest(ServerMessage<ClientRequest> request) {
         ExecutionMode executionMode = OperationHelper.resolveExecutionMode(serverId, request.payload().getOperation(), accountIdToClusterMap);
         int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
-        logger.info("New client request {} with execution mode {} and other cluster index {} being added to tracker.", request.getMessageId(), executionMode, otherClusterIndex);
+        logger.info("Client request {} with execution mode {} and other cluster index {} being added / updated in tracker. (either during new view or receiving accept/commit from leader)", request.getMessageId(), executionMode, otherClusterIndex);
         clientRequestTracker.addAcceptedRequest(request, executionMode, otherClusterIndex);
     }
 
     @Override
     public void onPaxosNewView(ServerMessage<NewViewMessage> newViewMessage) {
-        NewViewMessage newView = newViewMessage.payload();
+        newViews.add(newViewMessage.payload());
+        messageSender.broadcastLeaderElected(serverId);
 
+        NewViewMessage newView = newViewMessage.payload();
         for (AcceptMessage acceptMessage : newView.getAcceptLogList()) {
             Phase phase = acceptMessage.getPhase();
             ServerMessage<ClientRequest> request = new ServerMessage<>(acceptMessage.getRequest());
             onNewClientRequest(request);
             switch (phase) {
                 case PREPARE -> sendPrepare(request);
-                case ABORT -> {
-                    releaseLocks(request.getMessageId()); //shouldn't be needed but just in case
-                    markAbortedAndSend(request);
-                }
-                case COMMIT, INTRA_SHARD -> {
+                case COMMIT, ABORT, INTRA_SHARD -> {
                     //nothing to do here
                 }
                 default -> logger.error("Unknown phase {} in accept message during new view handling", phase);
@@ -490,5 +563,9 @@ public class TPCServer implements TPCHooks {
         }
         this.accountIdToClusterMap = database.getAllClusterIds();
         clientRequestTracker.reset();
+    }
+
+    public Set<NewViewMessage> getNewViews() {
+        return Set.copyOf(newViews);
     }
 }

@@ -17,7 +17,7 @@ service CLIService {
   rpc GetLog(google.protobuf.Empty) returns (CLIResponse) {};
   rpc GetDB(google.protobuf.Empty) returns (CLIResponse) {};
   rpc GetRequests(google.protobuf.Empty) returns (CLIResponse) {};
-  rpc GetNewViews(google.protobuf.Empty) returns (CLIResponse) {};
+  rpc GetNewViews(google.protobuf.Empty) returns (stream CLIResponse) {};
 
   rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {};
 }

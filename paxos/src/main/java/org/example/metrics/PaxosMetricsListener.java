@@ -19,7 +19,8 @@ public class PaxosMetricsListener implements MetricsListener {
             AtomicLong committedTime,
             AtomicLong executedTime,
             AtomicLong checkpointedTime
-    ) {}
+    ) {
+    }
 
     @Override
     public void onStatusTransition(long seqNum, OperationStatus from, OperationStatus to, long timestamp) {
@@ -49,14 +50,14 @@ public class PaxosMetricsListener implements MetricsListener {
         //                .forEach(entry -> logSeqMetrics(entry.getKey(), entry.getValue()));
 
         // Global averages for each segment; each segment has its own sample count.
-        SegmentStats accToCom  = new SegmentStats();
-        SegmentStats comToExe  = new SegmentStats();
+        SegmentStats accToCom = new SegmentStats();
+        SegmentStats comToExe = new SegmentStats();
 
         for (var entry : timings.entrySet()) {
             var ts = entry.getValue();
-            long accepted    = ts.acceptedTime.get();
-            long committed   = ts.committedTime.get();
-            long executed    = ts.executedTime.get();
+            long accepted = ts.acceptedTime.get();
+            long committed = ts.committedTime.get();
+            long executed = ts.executedTime.get();
 
             // ACCEPTED -> COMMITTED
             if (accepted > 0L && committed > 0L && committed > accepted) {
@@ -69,14 +70,20 @@ public class PaxosMetricsListener implements MetricsListener {
             }
         }
 
+        // If no samples were recorded for either segment, print a clear message and return.
+        if (accToCom.count() == 0 && comToExe.count() == 0) {
+            metricsLogger.info("No transactions recorded for Paxos metrics.");
+            return;
+        }
+
         String summary = String.format(
                 """
-                Average Paxos metrics
-                  Samples   acc->com=%d  com->exe=%d
-                  Durations (ms)
-                      acc->com   avg=%s  min=%s  max=%s
-                      com->exe   avg=%s  min=%s  max=%s
-                """.stripTrailing(),
+                        Average Paxos metrics
+                          Samples   acc->com=%d  com->exe=%d
+                          Durations (ms)
+                              acc->com   avg=%s  min=%s  max=%s
+                              com->exe   avg=%s  min=%s  max=%s
+                        """.stripTrailing(),
                 accToCom.count(),
                 comToExe.count(),
                 formatDuration(accToCom.average()),
@@ -126,5 +133,13 @@ public class PaxosMetricsListener implements MetricsListener {
         double max() {
             return count > 0 ? max : Double.NaN;
         }
+    }
+
+    /**
+     * Clear any recorded metrics. Thread-safe via ConcurrentMap.clear().
+     */
+    public void reset() {
+        timings.clear();
+        metricsLogger.info("Paxos metrics reset.");
     }
 }

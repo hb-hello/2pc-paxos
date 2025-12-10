@@ -337,9 +337,9 @@ public class ClientNode {
 
     private void handleFail(NodeId nodeId) {
         try {
-            Thread.sleep(100);
+            Thread.sleep(40);
             messageSender.failNode(nodeId);
-            Thread.sleep(100);
+            Thread.sleep(20);
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
@@ -347,9 +347,9 @@ public class ClientNode {
 
     private void handleRecover(NodeId nodeId) {
         try {
-            Thread.sleep(50);
+            Thread.sleep(20);
             messageSender.recoverNode(nodeId);
-            Thread.sleep(50);
+            Thread.sleep(20);
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }

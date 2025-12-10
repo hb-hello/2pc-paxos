@@ -82,13 +82,16 @@ public class ServerMain {
         if (modifiedAccounts.isEmpty()) {
             sb.append("No accounts have been modified.");
         } else {
-//            sb.append("Modified Accounts:\n");
-            for (Integer accountId : modifiedAccounts) {
+            for (Integer accountId : modifiedAccounts.stream().sorted().toList()) {
                 Double balance = database.get(accountId);
                 sb.append(accountId).append(" : ").append(balance).append("; ");
             }
         }
         return sb.toString();
+    }
+
+    public Set<NewViewMessage> getNewViews() {
+        return server.getNewViews();
     }
 
     public String getOperationLog() {

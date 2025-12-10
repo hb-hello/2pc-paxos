@@ -21,10 +21,10 @@ public class TPCService extends TPCServiceGrpc.TPCServiceImplBase {
     }
 
     @Override
-    public void tPCPrepare(TPCPrepareMessage request, StreamObserver<Empty> responseObserver) {
+    public void tPCPrepare(TPCPrepareMessage request, StreamObserver<TPCAckMessage> responseObserver) {
         ServerMessage<TPCPrepareMessage> message = new ServerMessage<>(request);
         logger.info("Received TPCPrepare message : {}", message);
-        server.handlePrepare(message);
+        server.handlePrepare(message, responseObserver);
     }
 
     @Override
@@ -46,6 +46,12 @@ public class TPCService extends TPCServiceGrpc.TPCServiceImplBase {
         ServerMessage<TPCAbortMessage> message = new ServerMessage<>(request);
         logger.info("Received TPCAbort message : {}", message);
         server.handleAbort(message, responseObserver);
+    }
+
+    @Override
+    public void leaderElected(NewLeader request, StreamObserver<Empty> responseObserver) {
+        logger.info("Received NewLeader message from server : {}", request.getSenderId());
+        server.handleLeaderElected(request);
     }
 
     @Override

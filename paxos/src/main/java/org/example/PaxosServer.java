@@ -15,6 +15,7 @@ import org.example.state.OperationLog;
 import org.example.state.OperationLogEntry;
 import org.example.state.PaxosState;
 
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -27,7 +28,7 @@ public class PaxosServer {
     private final LivenessTimer clientRequestTimer;
 
     private final PaxosState state;
-    private TPCHooks tpcHooks;
+    private final TPCHooks tpcHooks;
     private AtomicBoolean leaderElectionInProgress;
 
     private final PaxosService paxosService;
@@ -45,7 +46,7 @@ public class PaxosServer {
 
     public PaxosServer(int serverId, ExecutorManager executorManager, TPCHooks tpcHooks) {
         this.executorManager = executorManager;
-        this.promiseTimer = new LivenessTimer(getRandom(Config.getServerTimeoutMillis() / 2), this::promiseTimerCallback);
+        this.promiseTimer = new LivenessTimer(getRandom(Config.getServerTimeoutMillis() / 4), this::promiseTimerCallback);
         this.clientRequestTimer = new LivenessTimer(Config.getServerTimeoutMillis(), this::clientRequestTimerCallback);
 
         this.metricsListener = new PaxosMetricsListener();
@@ -70,8 +71,8 @@ public class PaxosServer {
 
     private long getRandom(long num) {
         Random random = new Random();
-        long max = num + 100;
-        long min = num - 100;
+        long max = num + 20;
+        long min = num - 20;
         return random.nextLong(max - min + 1) + min;
     }
 
@@ -294,14 +295,15 @@ public class PaxosServer {
         }
     }
 
-    public void refreshTimerOnExecute(String requestId, boolean restart) {
+    public void refreshTimerOnExecute(String requestId, boolean restart, List<String> txIds, Runnable onStoppingTimer) {
         if (restart) {
             state.hasRequestsWaitingToExecute();
-            logger.info("Pending locks detected; restarting client request timer.");
-            clientRequestTimer.restart("refreshing timer on execute for request id: " + requestId);
+            logger.info("Pending locks detected; restarting client request timer after executing request id: {}, for pending request id: {}", requestId, txIds.get(0));
+            clientRequestTimer.restart("refreshing timer on execute for pending request id: " + txIds.get(0));
         } else {
             logger.info("No pending locks to execute; stopping client request timer after executing request id: {}", requestId);
             clientRequestTimer.stop();
+            if (isLeader()) onStoppingTimer.run();
         }
     }
 
@@ -322,6 +324,7 @@ public class PaxosServer {
 
     public void reset() {
         metricsListener.printMetrics();
+        metricsListener.reset();
         promiseTimer.stop();
         clientRequestTimer.stop();
         leaderElectionInProgress.set(false);

@@ -17,10 +17,18 @@ public class TPCMessageSender extends MessageSender {
         super(nodeId, networkExecutor);
     }
 
-    public void sendPrepare(int targetNodeId, ServerMessage<TPCPrepareMessage> prepare) {
+    public void sendPrepare(int targetNodeId, ServerMessage<TPCPrepareMessage> prepare, StreamObserver<TPCAckMessage> responseObserver) {
         ensureActive();
         logger.info("Sending TPC Prepare to node {} : {}", targetNodeId, prepare);
-        stubManager.getTPCStub(targetNodeId).tPCPrepare(prepare.payload());
+        stubManager.getTPCAsyncStub(targetNodeId).withDeadlineAfter(10, TimeUnit.MILLISECONDS).tPCPrepare(prepare.payload(), responseObserver);
+    }
+
+    public void broadcastPrepareToCluster(int targetNodeId, ServerMessage<TPCPrepareMessage> prepare) {
+        ensureActive();
+        logger.info("Broadcasting TPC Prepare to cluster of node {} : {}", targetNodeId, prepare);
+        for (int nodeId : Config.getServerIdsInCluster(Config.getServerClusterIndex(targetNodeId))) {
+            stubManager.getTPCStub(targetNodeId).tPCPrepare(prepare.payload());
+        }
     }
 
     public void sendPrepared(int targetNodeId, ServerMessage<TPCPreparedMessage> prepared) {
@@ -65,5 +73,16 @@ public class TPCMessageSender extends MessageSender {
         ensureActive();
         logger.info("Sending Client Reply : {}", reply);
         stubManager.getClientStub(0).reply(reply.payload());
+    }
+
+    public void broadcastLeaderElected(int serverId) {
+        ensureActive();
+        logger.info("Broadcasting Leader Elected to all servers");
+        NewLeader newLeader = NewLeader.newBuilder()
+                .setSenderId(serverId)
+                .build();
+        for (int targetNodeId : Config.getAllServerIdsExceptInCluster(Config.getServerClusterIndex(serverId))) {
+            stubManager.getTPCStub(targetNodeId).leaderElected(newLeader);
+        }
     }
 }

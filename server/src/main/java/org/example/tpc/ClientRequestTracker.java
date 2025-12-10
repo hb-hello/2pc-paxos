@@ -10,9 +10,7 @@ import org.example.Phase;
 import org.example.TPCAckMessage;
 import org.example.messaging.ServerMessage;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -150,11 +148,14 @@ public class ClientRequestTracker {
         }
     }
 
-    // All known requests, keyed by messageId (clientId+timestamp via ServerMessage). [attached_file:1]
+    // All known requests, keyed by messageId (clientId+timestamp via ServerMessage)
     private final ConcurrentMap<String, Entry> entries = new ConcurrentHashMap<>();
 
     // Only ids for requests that are not yet marked accepted.
     private final Set<String> pendingIds = ConcurrentHashMap.newKeySet();
+
+    // Map otherClusterIndex -> set of requestIds where the request's mode == SENDER
+    private final ConcurrentMap<Integer, Set<String>> senderRequestIdsByOtherCluster = new ConcurrentHashMap<>();
 
     private String key(ServerMessage<ClientRequest> request) {
         return request.getMessageId();
@@ -180,6 +181,10 @@ public class ClientRequestTracker {
         if (existing == null) {
             pendingIds.add(id);
         }
+        // Track SENDER-mode request ids by otherClusterIndex (idempotent)
+        if (mode == ExecutionMode.SENDER) {
+            senderRequestIdsByOtherCluster.computeIfAbsent(otherClusterIndex, k -> ConcurrentHashMap.newKeySet()).add(id);
+        }
     }
 
     public void addAcceptedRequest(ServerMessage<ClientRequest> request, ExecutionMode mode, int otherClusterIndex) {
@@ -187,6 +192,10 @@ public class ClientRequestTracker {
         String id = key(request);
         entries.putIfAbsent(id, newEntry);
         markAccepted(request);
+        // Also ensure SENDER-mode requests are tracked here as well
+        if (mode == ExecutionMode.SENDER) {
+            senderRequestIdsByOtherCluster.computeIfAbsent(otherClusterIndex, k -> ConcurrentHashMap.newKeySet()).add(id);
+        }
     }
 
     public void setReply(ServerMessage<ClientRequest> request,
@@ -244,7 +253,11 @@ public class ClientRequestTracker {
     }
 
     public boolean isAccepted(ServerMessage<ClientRequest> request) {
-        Entry e = entries.get(key(request));
+        return isAccepted(key(request));
+    }
+
+    public boolean isAccepted(String requestId) {
+        Entry e = entries.get(requestId);
         return e != null && e.isAccepted();
     }
 
@@ -269,6 +282,15 @@ public class ClientRequestTracker {
         Entry e = entries.get(requestId);
         if (e != null) {
             e.setAckReceived();
+            // Remove from senderRequestIdsByOtherCluster if present
+            int otherCluster = e.getOtherClusterIndex();
+            senderRequestIdsByOtherCluster.computeIfPresent(otherCluster, (k, set) -> {
+                set.remove(requestId);
+                // remove the bucket if empty
+                return set.isEmpty() ? null : set;
+            });
+            logger.info("Marked ACK received for request {}, removed from waiting list for otherClusterIndex {}",
+                    requestId, otherCluster);
         }
     }
 
@@ -331,9 +353,11 @@ public class ClientRequestTracker {
         }
         Phase current = entry.getPhase();
         boolean allowed =
-                (current == null && (targetPhase == Phase.PREPARE || targetPhase == Phase.INTRA_SHARD)) ||
+                (current == null) ||
                         (current == Phase.PREPARE && (targetPhase == Phase.COMMIT || targetPhase == Phase.ABORT));
         if (!allowed) {
+            logger.warn("Invalid phase transition from {} to {} for request {}",
+                    current, targetPhase, entry.getRequest().getMessageId());
             return false;
         }
         entry.setPhase(targetPhase);
@@ -372,12 +396,16 @@ public class ClientRequestTracker {
     }
 
     public boolean isPrepared(ServerMessage<ClientRequest> request) {
-        Entry e = entries.get(key(request));
+        return isPrepared(key(request));
+    }
+
+    public boolean isPrepared(String requestId) {
+        Entry e = entries.get(requestId);
         return e != null && e.getPhase() == Phase.PREPARE;
     }
 
     public boolean isCommitted(ServerMessage<ClientRequest> request) {
-       return isCommitted(key(request));
+        return isCommitted(key(request));
     }
 
     public boolean isCommitted(String requestId) {
@@ -452,6 +480,7 @@ public class ClientRequestTracker {
     /**
      * Helper to atomically send an ack response to the observer registered for the given requestId.
      * If an observer is registered, it will be consumed (cleared) and the message sent.
+     *
      * @param requestId client request id
      */
     public void sendAckResponse(String requestId) {
@@ -479,6 +508,38 @@ public class ClientRequestTracker {
     public void reset() {
         entries.clear();
         pendingIds.clear();
+        senderRequestIdsByOtherCluster.clear();
     }
 
+    /**
+     * Return an unmodifiable snapshot of request IDs for the given otherClusterIndex.
+     */
+    public Set<String> getRequestsForOtherCluster(int otherClusterIndex) {
+        Set<String> s = senderRequestIdsByOtherCluster.get(otherClusterIndex);
+        if (s == null) return Collections.emptySet();
+        return Set.copyOf(s);
+    }
+
+    /**
+     * Return a snapshot map of all otherClusterIndex -> requestId sets (unmodifiable).
+     */
+    public Map<Integer, Set<String>> getAllSenderRequestsByOtherCluster() {
+        Map<Integer, Set<String>> copy = new HashMap<>();
+        for (Map.Entry<Integer, Set<String>> e : senderRequestIdsByOtherCluster.entrySet()) {
+            copy.put(e.getKey(), Set.copyOf(e.getValue()));
+        }
+        return Collections.unmodifiableMap(copy);
+    }
+
+    /**
+     * Return a flattened snapshot set of all request IDs that are waiting for ACK
+     * across all other clusters (i.e., union of all values in senderRequestIdsByOtherCluster).
+     */
+    public Set<String> getRequestsWaitingForAck() {
+        Set<String> flat = new HashSet<>();
+        for (Set<String> s : senderRequestIdsByOtherCluster.values()) {
+            flat.addAll(s);
+        }
+        return Set.copyOf(flat);
+    }
 }

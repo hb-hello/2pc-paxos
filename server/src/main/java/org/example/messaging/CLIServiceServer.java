@@ -77,6 +77,16 @@ public class CLIServiceServer extends CLIServiceGrpc.CLIServiceImplBase {
         responseObserver.onCompleted();
     }
 
+    public void getNewViews(Empty request, StreamObserver<CLIResponse> responseObserver) {
+        logger.info("Received getNewViews request");
+        for (NewViewMessage nvm : server.getNewViews()) {
+            CLIResponse response = CLIResponse.newBuilder().setCliResponse(ServerMessageFormatter.formatNewViewDetailed(nvm)).build();
+            responseObserver.onNext(response);
+            logger.info("Sent NewViewMessage: {}", ServerMessageFormatter.formatNewViewDetailed(nvm));
+        }
+        responseObserver.onCompleted();
+    }
+
     @Override
     public void ping(Empty request, StreamObserver<Empty> responseObserver) {
         logger.debug("Received ping request");

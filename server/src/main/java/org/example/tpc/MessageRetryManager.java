@@ -51,11 +51,16 @@ public class MessageRetryManager {
         String messageId = commit.getMessageId();
 
         // Ensure we only create one task per messageId, even if multiple threads call this.
-        firstSendCommitDone.putIfAbsent(messageId, Boolean.FALSE);
+        // Use putIfAbsent to check if we're already retrying this message.
+        if (firstSendCommitDone.putIfAbsent(messageId, Boolean.FALSE) != null) {
+            // Already started retries for this messageId
+            logger.debug("Commit retries already started for messageId={}", messageId);
+            return;
+        }
 
         Runnable sendTask = () -> {
-            // If we were cancelled concurrently, just exit.
-            if (!tasks.containsKey(messageId)) {
+            // If we were cancelled concurrently (entry removed from firstSendCommitDone), just exit.
+            if (!firstSendCommitDone.containsKey(messageId)) {
                 return;
             }
 
@@ -79,10 +84,15 @@ public class MessageRetryManager {
         ScheduledFuture<?> newFuture =
                 scheduler.scheduleAtFixedRate(sendTask, 0, intervalMillis, TimeUnit.MILLISECONDS);
 
-        // Atomically register the task if absent; cancel the new one if some other thread won.
-        ScheduledFuture<?> existing = tasks.putIfAbsent(messageId, newFuture);
-        if (existing != null) {
-            newFuture.cancel(false);
+        // Register the task; if stopRetries was called between putIfAbsent and here, cancel immediately
+        tasks.put(messageId, newFuture);
+
+        // Double-check: if stopRetries removed from firstSendCommitDone while we were scheduling, cancel now
+        if (!firstSendCommitDone.containsKey(messageId)) {
+            ScheduledFuture<?> fut = tasks.remove(messageId);
+            if (fut != null) {
+                fut.cancel(false);
+            }
         }
     }
 
@@ -96,10 +106,16 @@ public class MessageRetryManager {
                                   ServerMessage<TPCAbortMessage> abort) {
         String messageId = abort.getMessageId();
 
-        firstSendAbortDone.putIfAbsent(messageId, Boolean.FALSE);
+        // Ensure we only create one task per messageId, even if multiple threads call this.
+        if (firstSendAbortDone.putIfAbsent(messageId, Boolean.FALSE) != null) {
+            // Already started retries for this messageId
+            logger.debug("Abort retries already started for messageId={}", messageId);
+            return;
+        }
 
         Runnable sendTask = () -> {
-            if (!tasks.containsKey(messageId)) {
+            // If we were cancelled concurrently (entry removed from firstSendAbortDone), just exit.
+            if (!firstSendAbortDone.containsKey(messageId)) {
                 return;
             }
 
@@ -123,9 +139,15 @@ public class MessageRetryManager {
         ScheduledFuture<?> newFuture =
                 scheduler.scheduleAtFixedRate(sendTask, 0, intervalMillis, TimeUnit.MILLISECONDS);
 
-        ScheduledFuture<?> existing = tasks.putIfAbsent(messageId, newFuture);
-        if (existing != null) {
-            newFuture.cancel(false);
+        // Register the task; if stopRetries was called between putIfAbsent and here, cancel immediately
+        tasks.put(messageId, newFuture);
+
+        // Double-check: if stopRetries removed from firstSendAbortDone while we were scheduling, cancel now
+        if (!firstSendAbortDone.containsKey(messageId)) {
+            ScheduledFuture<?> fut = tasks.remove(messageId);
+            if (fut != null) {
+                fut.cancel(false);
+            }
         }
     }
 
@@ -176,7 +198,7 @@ public class MessageRetryManager {
         for (Map.Entry<String, ScheduledFuture<?>> e : tasks.entrySet()) {
             ScheduledFuture<?> fut = tasks.remove(e.getKey());
             if (fut != null) {
-                fut.cancel(false);
+                fut.cancel(true);
             }
         }
         firstSendCommitDone.clear();

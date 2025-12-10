@@ -203,6 +203,24 @@ public class Config {
         return nodes.size() - 1;
     }
 
+    public static Set<Integer> getAllServerIdsExcept(int excludeId) {
+        ensureInitialized();
+        Set<Integer> ids = new HashSet<>(nodes.keySet());
+        ids.remove(0); // Remove client id
+        ids.remove(excludeId);
+        return ids;
+    }
+
+    public static Set<Integer> getAllServerIdsExceptInCluster(int clusterIndex) {
+        ensureInitialized();
+        Set<Integer> ids = new HashSet<>(nodes.keySet());
+        ids.remove(0); // Remove client id
+        for (Integer id : clusterIndexToServerIdMap.get(clusterIndex)) {
+            ids.remove(id);
+        }
+        return ids;
+    }
+
     public static List<Integer> getServerIdsInCluster(int clusterIndex) {
         ensureInitialized();
         List<Integer> ids = new ArrayList<>();
