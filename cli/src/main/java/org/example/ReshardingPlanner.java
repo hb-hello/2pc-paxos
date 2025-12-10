@@ -131,18 +131,25 @@ public class ReshardingPlanner {
             throw new IllegalArgumentException("clusterCount must be > 0");
         }
 
+        // Build adjacency graph ONLY from transactions - don't include accounts not in transactions
         Map<Integer, Map<Integer, Integer>> adjacency = buildAdjacency(transactions);
 
-        // Ensure all known accounts appear as vertices
-        for (Integer accountId : currentAssignment.keySet()) {
-            adjacency.computeIfAbsent(accountId, k -> new HashMap<>());
+        // Only work with accounts that appear in the transaction set
+        Set<Integer> activeAccounts = adjacency.keySet();
+        if (activeAccounts.isEmpty()) {
+            return Collections.emptyList();
         }
 
-        Map<Integer, Integer> newAssignment = new HashMap<>(currentAssignment);
+        // Build assignment map only for active accounts (those in transactions)
+        Map<Integer, Integer> newAssignment = new HashMap<>();
+        for (Integer accountId : activeAccounts) {
+            Integer cluster = currentAssignment.get(accountId);
+            if (cluster != null) {
+                newAssignment.put(accountId, cluster);
+            }
+        }
 
-        // Optional: keep your existing single-vertex improvement here,
-        // but you can also skip it and rely only on swaps.
-
+        // Run swap-based improvement - only considers accounts in the transaction set
         improveWithSwaps(newAssignment, adjacency, clusterCount, 5);
 
         List<Move> moves = new ArrayList<>();
@@ -162,6 +169,7 @@ public class ReshardingPlanner {
                                          int clusterCount,
                                          int maxPasses) {
 
+        // Only consider accounts that have edges (i.e., appear in transactions with other accounts)
         List<Integer> active = new ArrayList<>();
         for (Map.Entry<Integer, Map<Integer, Integer>> e : adj.entrySet()) {
             if (!e.getValue().isEmpty()) {
@@ -176,38 +184,68 @@ public class ReshardingPlanner {
             boolean improved = false;
             Collections.shuffle(active, rnd);
 
-            int bestU = -1, bestV = -1;
-            int bestDelta = 0;
+            // --- First, try to find the best SWAP ---
+            int bestSwapU = -1, bestSwapV = -1;
+            int bestSwapDelta = 0;
 
-            for (int i = 0; i < active.size(); i++) {
-                int u = active.get(i);
-                int cu = assignment.get(u);
+            if (active.size() >= 2) {
+                for (int i = 0; i < active.size(); i++) {
+                    int u = active.get(i);
+                    Integer cu = assignment.get(u);
+                    if (cu == null) continue;
 
-                // Pair u only with vertices in *other* clusters.
-                for (Map.Entry<Integer, Integer> e : assignment.entrySet()) {
-                    int v = e.getKey();
-                    int cv = e.getValue();
-                    if (cv == cu) continue;
-                    // Optional: skip cold–cold swaps
-                    if (adj.getOrDefault(v, Map.of()).isEmpty() &&
-                            adj.getOrDefault(u, Map.of()).isEmpty()) {
-                        continue;
-                    }
+                    for (int j = i + 1; j < active.size(); j++) {
+                        int v = active.get(j);
+                        Integer cv = assignment.get(v);
+                        if (cv == null) continue;
+                        if (cv.equals(cu)) continue; // Same cluster, no point swapping
 
-                    int delta = swapGain(u, v, assignment, adj);
-                    if (delta < bestDelta) {
-                        bestDelta = delta;
-                        bestU = u;
-                        bestV = v;
+                        int delta = swapGain(u, v, assignment, adj);
+                        if (delta < bestSwapDelta) {
+                            bestSwapDelta = delta;
+                            bestSwapU = u;
+                            bestSwapV = v;
+                        }
                     }
                 }
             }
 
-            if (bestDelta < 0) {
-                int cu = assignment.get(bestU);
-                int cv = assignment.get(bestV);
-                assignment.put(bestU, cv);
-                assignment.put(bestV, cu);
+            // --- Second, try to find the best SINGLE MOVE ---
+            int bestMoveU = -1;
+            int bestMoveToCluster = -1;
+            int bestMoveDelta = 0;
+
+            for (int u : active) {
+                Integer cu = assignment.get(u);
+                if (cu == null) continue;
+
+                int currentCost = costForVertex(u, cu, assignment, adj);
+
+                for (int targetCluster = 0; targetCluster < clusterCount; targetCluster++) {
+                    if (targetCluster == cu) continue;
+
+                    int newCost = costForVertex(u, targetCluster, assignment, adj);
+                    int delta = newCost - currentCost; // negative is good
+
+                    if (delta < bestMoveDelta) {
+                        bestMoveDelta = delta;
+                        bestMoveU = u;
+                        bestMoveToCluster = targetCluster;
+                    }
+                }
+            }
+
+            // --- Apply the best improvement: prefer swaps over single moves ---
+            if (bestSwapDelta < 0 && bestSwapDelta <= bestMoveDelta) {
+                // Apply swap
+                int cu = assignment.get(bestSwapU);
+                int cv = assignment.get(bestSwapV);
+                assignment.put(bestSwapU, cv);
+                assignment.put(bestSwapV, cu);
+                improved = true;
+            } else if (bestMoveDelta < 0) {
+                // Apply single move
+                assignment.put(bestMoveU, bestMoveToCluster);
                 improved = true;
             }
 
