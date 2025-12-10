@@ -148,6 +148,7 @@ public class ClientBenchmark implements ClientMetricsListener {
         System.out.printf("Abort rate: %.2f%%, Fail rate: %.2f%%%n", abortRate, failRate);
         System.out.printf("Latency (ms) - avg: %.2f, min: %d, max: %d%n",
                 avgLatency, min, max);
+        System.out.println("Ran benchmark for " + (endTimeNanos - startTimeNanos) / 1_000_000_000.0 + " seconds");
     }
 
     /**
@@ -399,7 +400,9 @@ public class ClientBenchmark implements ClientMetricsListener {
         }
 
         // Build intra-shard transfer requests using shared hot pools
-        requests.addAll(buildIntraShardTransfersInternal(hotPoolByCluster, intraShardTransfers, rnd));
+        // Use sequential selection when skew is 0 to minimize accidental contention
+        boolean useSequential = (skew == 0.0);
+        requests.addAll(buildIntraShardTransfersInternal(hotPoolByCluster, intraShardTransfers, useSequential, rnd));
 
         // Build cross-shard transfer requests using shared hot pools
         requests.addAll(buildCrossShardTransfersInternal(hotPoolByCluster, crossShardTransfers, clusterCount, rnd));
@@ -425,7 +428,6 @@ public class ClientBenchmark implements ClientMetricsListener {
             List<Integer> accounts = accountsByCluster.get(clusterIdx);
             if (accounts != null && accounts.size() >= 2) {
                 int numAccounts = accounts.size();
-                // Hot pool size ranges from numAccounts (skew=0) to 2 (skew=1)
                 // Need at least 2 for intra-shard transfers (sender != receiver)
                 int hotPoolSize = Math.max(2, (int) Math.round(numAccounts * (1.0 - skew)));
                 hotPoolByCluster.put(clusterIdx, new ArrayList<>(accounts.subList(0, hotPoolSize)));
@@ -460,9 +462,12 @@ public class ClientBenchmark implements ClientMetricsListener {
 
     /**
      * Build intra-shard transfers using pre-computed hot pools (internal helper, does not shuffle).
+     * When useSequential is true (skew=0), uses round-robin selection to minimize accidental contention.
+     * When useSequential is false (skew>0), uses random selection within the hot pool.
      */
     private static List<String> buildIntraShardTransfersInternal(Map<Integer, List<Integer>> hotPoolByCluster,
                                                                   int totalTransfers,
+                                                                  boolean useSequential,
                                                                   ThreadLocalRandom rnd) {
         if (totalTransfers == 0) {
             return new ArrayList<>();
@@ -495,19 +500,39 @@ public class ClientBenchmark implements ClientMetricsListener {
             // This cluster gets basePerCluster + 1 if it's one of the first 'remainder' clusters
             int transfersForThisCluster = basePerCluster + (clusterIdx < remainder ? 1 : 0);
 
-            for (int i = 0; i < transfersForThisCluster; i++) {
-                int senderIdx = rnd.nextInt(hotPoolSize);
-                int receiverIdx;
-                do {
-                    receiverIdx = rnd.nextInt(hotPoolSize);
-                } while (receiverIdx == senderIdx);
+            if (useSequential) {
+                // Sequential/round-robin selection to minimize contention
+                // Shuffle the pool once to randomize which accounts are paired, but ensure no repeats until necessary
+                List<Integer> shuffledPool = new ArrayList<>(hotPool);
+                Collections.shuffle(shuffledPool, rnd);
 
-                int sender = hotPool.get(senderIdx);
-                int receiver = hotPool.get(receiverIdx);
-                double amount = rnd.nextDouble(1.0, 10.0);
+                for (int i = 0; i < transfersForThisCluster; i++) {
+                    int senderIdx = i % hotPoolSize;
+                    int receiverIdx = (i + 1) % hotPoolSize; // Next account in sequence
 
-                String tx = sender + "," + receiver + "," + String.format(Locale.US, "%.2f", amount);
-                txs.add(tx);
+                    int sender = shuffledPool.get(senderIdx);
+                    int receiver = shuffledPool.get(receiverIdx);
+                    double amount = rnd.nextDouble(1.0, 10.0);
+
+                    String tx = sender + "," + receiver + "," + String.format(Locale.US, "%.2f", amount);
+                    txs.add(tx);
+                }
+            } else {
+                // Random selection within hot pool (for skew > 0)
+                for (int i = 0; i < transfersForThisCluster; i++) {
+                    int senderIdx = rnd.nextInt(hotPoolSize);
+                    int receiverIdx;
+                    do {
+                        receiverIdx = rnd.nextInt(hotPoolSize);
+                    } while (receiverIdx == senderIdx);
+
+                    int sender = hotPool.get(senderIdx);
+                    int receiver = hotPool.get(receiverIdx);
+                    double amount = rnd.nextDouble(1.0, 10.0);
+
+                    String tx = sender + "," + receiver + "," + String.format(Locale.US, "%.2f", amount);
+                    txs.add(tx);
+                }
             }
             clusterIdx++;
         }

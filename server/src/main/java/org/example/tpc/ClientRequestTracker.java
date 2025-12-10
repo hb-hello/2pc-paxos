@@ -190,6 +190,7 @@ public class ClientRequestTracker {
     public void addAcceptedRequest(ServerMessage<ClientRequest> request, ExecutionMode mode, int otherClusterIndex) {
         Entry newEntry = new Entry(request, mode, otherClusterIndex);
         String id = key(request);
+        newEntry.markAccepted();
         entries.putIfAbsent(id, newEntry);
         markAccepted(request);
         // Also ensure SENDER-mode requests are tracked here as well

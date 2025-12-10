@@ -14,7 +14,7 @@ public class TPCMessageSender extends MessageSender {
     private static final Logger logger = LogManager.getLogger(TPCMessageSender.class);
 
     public TPCMessageSender(int nodeId, ExecutorService networkExecutor) {
-        super(nodeId, networkExecutor);
+        super(nodeId);
     }
 
     public void sendPrepare(int targetNodeId, ServerMessage<TPCPrepareMessage> prepare, StreamObserver<TPCAckMessage> responseObserver) {

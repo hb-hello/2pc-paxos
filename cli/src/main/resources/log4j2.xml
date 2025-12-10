@@ -8,11 +8,11 @@
   </Appenders>
 
   <Loggers>
-    <Logger name="org.example" level="info" additivity="false">
+    <Logger name="org.example" level="error" additivity="false">
       <AppenderRef ref="CliFile" />
     </Logger>
 
-    <Root level="info">
+    <Root level="error">
       <AppenderRef ref="CliFile" />
     </Root>
   </Loggers>

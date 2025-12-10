@@ -37,7 +37,7 @@ public class ServerMain {
         this.serverId = serverId;
         // Initialize the instance logger here so Log4j has already been configured in main()
         this.logger = LogManager.getLogger(ServerMain.class);
-        this.executorManager = new ExecutorManager(Config.getNodes().size() - 1);
+        this.executorManager = new ExecutorManager();
         logger.info("Connecting to database for Server {}", serverId);
         this.database = DatabaseManager.create(serverId);
         logger.info("Database connection established for Server {}", serverId);
@@ -47,7 +47,7 @@ public class ServerMain {
         this.tpcService = new TPCService(server);
         this.paxosService = new PaxosService(server.getPaxosServer());
         this.messageReceiver = new MessageReceiver(serverId, Config.getNodePort(serverId),
-                List.of(clientService, tpcService, paxosService, cliServiceServer), new ServerActivityInterceptor());
+                List.of(clientService, tpcService, paxosService, cliServiceServer), new ServerActivityInterceptor(), executorManager.getGrpcExecutor());
     }
 
     @SuppressWarnings("unused")

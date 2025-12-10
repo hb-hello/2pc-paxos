@@ -4,12 +4,16 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.*;
 
 public class Config {
     private static final Logger logger = LogManager.getLogger(Config.class);
+
+    private static final String DEFAULT_CONFIG_PATH = "config.properties";
+    private static String activeConfigPath = DEFAULT_CONFIG_PATH;
 
     private static boolean initialized = false;
 
@@ -102,16 +106,25 @@ public class Config {
         logger.info("Config initialized: {} servers configured (including client at 0), transactions path: {}, database.size={}, server.executable.path={}", nodes.size(), transactionsSetsPath, databaseSize, serverExecutablePath);
     }
 
+    public static synchronized void reset() {
+        initialized = false;
+        nodes.clear();
+        serverIdToClusterIndexMap.clear();
+        clusterIndexToServerIdMap.clear();
+    }
+
     /**
      * Convenience overload to load properties from a file path using existing loader.
      */
     public static void initialize(String filePath) {
-        Properties props = loadProperties(filePath);
+        String resolvedPath = (filePath == null || filePath.isBlank()) ? DEFAULT_CONFIG_PATH : filePath;
+        activeConfigPath = resolvedPath;
+        Properties props = loadProperties(resolvedPath);
         initialize(props);
     }
 
     public static void initialize() {
-        initialize("config.properties");
+        initialize(DEFAULT_CONFIG_PATH);
     }
 
     // Accessors (ensure initialized)
@@ -256,6 +269,22 @@ public class Config {
     public static int getQuorumSize() {
         ensureInitialized();
         return quorumSize;
+    }
+
+    public static synchronized void updateClusterConfig(int clusterCount, int clusterSize) {
+        Properties props = loadProperties(activeConfigPath);
+        props.setProperty("server.cluster.count", Integer.toString(clusterCount));
+        props.setProperty("server.cluster.size", Integer.toString(clusterSize));
+        try (FileOutputStream out = new FileOutputStream(activeConfigPath)) {
+            props.store(out, "Updated cluster configuration");
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to write updated cluster config", e);
+        }
+        reset();
+    }
+
+    public static String getActiveConfigPath() {
+        return activeConfigPath;
     }
 
     /**

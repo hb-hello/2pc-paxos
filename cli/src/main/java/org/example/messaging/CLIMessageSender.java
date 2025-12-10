@@ -8,24 +8,16 @@ import org.apache.logging.log4j.Logger;
 import org.example.*;
 import org.example.config.Config;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
 
 public class CLIMessageSender extends MessageSender {
     private static final Logger logger = LogManager.getLogger(CLIMessageSender.class);
 
-    private final ExecutorService networkExecutor;
-
-    public CLIMessageSender(int clientId, ExecutorService networkExecutor) {
-        super(clientId, networkExecutor);
-        this.networkExecutor = networkExecutor;
+    public CLIMessageSender(int clientId) {
+        super(clientId);
     }
 
     public ListenableFuture<Empty> sendClientRequestWithDeadline(int targetServerId, ClientRequest request, long deadlineMillis) {

@@ -27,7 +27,6 @@ import java.util.Scanner;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -38,12 +37,13 @@ public class CliMain {
     private static final Logger logger = LogManager.getLogger(CliMain.class);
 
     private final ExecutorManager executorManager;
-    private final DBHandler dbHandler;
+    private DBHandler dbHandler;
     private final CLIMessageSender cliMessageSender;
     private final MessageReceiver messageReceiver;
     private final List<TransactionSet> transactionSets;
-    private final CountDownLatch warmupComplete = new CountDownLatch(1);
+    private CountDownLatch warmupComplete = new CountDownLatch(1);
     private final AtomicBoolean warmupStarted = new AtomicBoolean(false);
+    private final CLIServiceClient cliServiceClient;
     private final ClientServiceClient clientServiceClient;
 
     private volatile ClientNode activeClientNode;
@@ -53,13 +53,13 @@ public class CliMain {
 
     public CliMain() {
         // Instantiate DBHandler so CLI commands can query DB contents
-        this.executorManager = new ExecutorManager(Config.getNodes().size() - 1);
+        this.executorManager = new ExecutorManager();
         this.dbHandler = new DBHandler();
 
-        this.cliMessageSender = new CLIMessageSender(0, Executors.newSingleThreadExecutor());
-        CLIServiceClient cliServiceClient = new CLIServiceClient(this);
+        this.cliMessageSender = new CLIMessageSender(0);
+        this.cliServiceClient = new CLIServiceClient(this);
         this.clientServiceClient = new ClientServiceClient(this);
-        this.messageReceiver = new MessageReceiver(0, Config.getClientPort(), List.of(cliServiceClient, clientServiceClient));
+        this.messageReceiver = new MessageReceiver(0, Config.getClientPort(), List.of(cliServiceClient, clientServiceClient), executorManager.getGrpcExecutor());
 
         this.newViews = ConcurrentHashMap.newKeySet();
 
@@ -76,8 +76,7 @@ public class CliMain {
 
     public void start() {
         try {
-            executorManager.submitListeningTask(() -> messageReceiver.startListening(() -> {
-            }));
+            executorManager.submitListeningTask(() -> messageReceiver.startListening(() -> {}));
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -146,6 +145,63 @@ public class CliMain {
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private void reconfigureServers(int newClusterCount, int newClusterSize) {
+        ServerManager.shutdownAllServers();
+        dbHandler.close();
+        warmupStarted.set(false);
+        warmupComplete = new CountDownLatch(1);
+        cliServiceClient.resetWarmedUp();
+
+        try {
+            Thread.sleep(500);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+
+        Config.updateClusterConfig(newClusterCount, newClusterSize);
+        Config.initialize();
+
+        try {
+            Thread.sleep(500);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+
+        dbHandler = new DBHandler();
+        cliMessageSender.resetStubManager();
+
+        try {
+            Thread.sleep(500);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+
+        try {
+            ServerManager.startAllServers(Config.getServerExecutablePath(), Config.getServerCount());
+        } catch (IOException e) {
+            System.out.println("Error restarting servers after re-configuration: " + e.getMessage());
+            return;
+        }
+
+        try {
+            Thread.sleep(500);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+
+        System.out.println("Waiting for CLI warmup to complete...");
+        awaitWarmupWithPings();
+
+        try {
+            Thread.sleep(500);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+
+        warmupWithTransactions(180);
+        System.out.println("Warmup complete. CLI & Servers are ready after re-configuration.");
     }
 
     public void warmupWithPings() {
@@ -333,6 +389,9 @@ public class CliMain {
         ClientNode clientNode = new ClientNode(cliMessageSender, accountToClusterIndex, executorManager.getRetryExecutor(), false);
         registerActiveClientNode(clientNode);
 
+        warmupWithTransactions(accountToClusterIndex, clientNode, 600);
+        resetAllServers();
+
         ClientBenchmark benchmark = new ClientBenchmark(totalRequests);
         clientNode.setMetricsListener(benchmark);
 
@@ -347,9 +406,13 @@ public class CliMain {
                 totalRequests, readCount, intraShardCount, crossShardCount, skew * 100);
 
         benchmark.start();
+        long sendStartNanos = System.nanoTime();
         for (String tx : txs) {
             clientNode.processTransaction(tx);
         }
+        long sendEndNanos = System.nanoTime();
+        double sendDurationMillis = (sendEndNanos - sendStartNanos) / 1_000_000.0;
+        System.out.printf("Sent %d requests in %.2f ms%n", txs.size(), sendDurationMillis);
 
         try {
             int secondsToWait = Math.max(totalRequests / 500, 10);
@@ -624,6 +687,7 @@ public class CliMain {
             System.out.println(" 9 - DEBUG: PrintLog");
             System.out.println(" 10 - Run one benchmark");
             System.out.println(" 11 - Run benchmark suite");
+            System.out.println(" 12 - Reconfiguration");
             System.out.println(" 0 - Exit");
             System.out.print("Choice: ");
             String choice = sc.nextLine().trim();
@@ -776,6 +840,40 @@ public class CliMain {
                         break;
                     }
                     cli.runContentionSuite(reqCount);
+                }
+                case "12" -> {
+                    System.out.println("Enter new configuration parameters.");
+                    System.out.print("New cluster count (current " + Config.getServerClusterCount() + "): ");
+                    String serverCountStr = sc.nextLine().trim();
+                    int newClusterCount;
+                    try {
+                        newClusterCount = Integer.parseInt(serverCountStr);
+                        if (newClusterCount <= 0 || newClusterCount > 32) {
+                            System.out.println("Cluster count must be positive and not too high.");
+                            break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid server count.");
+                        break;
+                    }
+                    System.out.print("New cluster size (current " + Config.getServerClusterSize() + "): ");
+                    String clusterCountStr = sc.nextLine().trim();
+                    int newClusterSize;
+                    try {
+                        newClusterSize = Integer.parseInt(clusterCountStr);
+                        if (newClusterSize <= 0 || newClusterSize > 32) {
+                            System.out.println("Cluster size must be positive and not too high.");
+                            break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid cluster count.");
+                        break;
+                    }
+                    if (newClusterSize * newClusterCount > 32) {
+                        System.out.println("Cluster count and size too high.");
+                    }
+                    System.out.println("Restarting all servers and CLI after re-configuration...");
+                    cli.reconfigureServers(newClusterCount, newClusterSize);
                 }
                 case "0" -> {
                     System.out.println("Exiting...");

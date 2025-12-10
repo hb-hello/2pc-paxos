@@ -20,6 +20,12 @@ public class CLIServiceClient extends CLIServiceGrpc.CLIServiceImplBase {
         this.warmedUp = new AtomicBoolean(false);
     }
 
+    public void resetWarmedUp() {
+        synchronized (warmedUp) {
+            warmedUp.set(false);
+        }
+    }
+
     @Override
     public void ping(Empty request, StreamObserver<Empty> responseObserver) {
         logger.debug("Received ping request");

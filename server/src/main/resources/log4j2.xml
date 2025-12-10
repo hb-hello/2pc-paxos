@@ -17,14 +17,14 @@
 
   <Loggers>
     <!-- Ensure org.example classes are explicitly logged to the server file -->
-    <Logger name="org.example" level="info" additivity="false">
+    <Logger name="org.example" level="error" additivity="false">
       <AppenderRef ref="ServerFile" />
     </Logger>
       <Logger name="PaxosMetricsLogger" level="info" additivity="false">
           <AppenderRef ref="PaxosMetricsFile" />
       </Logger>
     <!-- Route everything to the file appender and disable console logging -->
-    <Root level="info">
+    <Root level="error">
       <AppenderRef ref="ServerFile" />
     </Root>
   </Loggers>

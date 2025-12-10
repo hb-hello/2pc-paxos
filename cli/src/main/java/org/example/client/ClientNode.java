@@ -19,7 +19,7 @@ public class ClientNode {
     private static final Logger logger = LogManager.getLogger(ClientNode.class);
 
     // Max total attempts: 1 leader try + (MAX_BROADCAST_ROUNDS * full-cluster broadcasts)
-    private static final int MAX_BROADCAST_ROUNDS = 3;
+    private static final int MAX_BROADCAST_ROUNDS = 10;
 
     private final CLIMessageSender messageSender;
     private final Map<Integer, Integer> accountIdToClusterIndex;

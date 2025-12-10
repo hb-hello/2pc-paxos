@@ -8,6 +8,7 @@ import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class MessageReceiver {
@@ -21,7 +22,7 @@ public class MessageReceiver {
 
     // Constructor accepting multiple services and an interceptor
     public MessageReceiver(int nodeId, int port,
-                              List<BindableService> services, ServerActivityInterceptor interceptor) {
+                           List<BindableService> services, ServerActivityInterceptor interceptor, ExecutorService grpcExecutor) {
         this.nodeId = nodeId;
         this.port = port;
         this.interceptor = interceptor;
@@ -35,13 +36,14 @@ public class MessageReceiver {
         if (interceptor != null) {
             builder.intercept(interceptor);
         }
+        builder.executor(grpcExecutor);
         this.grpcServer = builder.build();
         logger.info("GRPC server for node {} initialized on port {}", nodeId, port);
     }
 
     // Overloaded constructor without interceptor parameter
     public MessageReceiver(int nodeId, int port,
-                              List<BindableService> services) {
+                              List<BindableService> services,ExecutorService grpcExecutor) {
         this.nodeId = nodeId;
         this.port = port;
         this.interceptor = null;
@@ -52,6 +54,7 @@ public class MessageReceiver {
                 builder.addService(svc);
             }
         }
+        builder.executor(grpcExecutor);
         this.grpcServer = builder.build();
     }
 

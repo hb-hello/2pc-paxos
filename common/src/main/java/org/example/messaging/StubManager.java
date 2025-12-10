@@ -21,10 +21,9 @@ import java.util.concurrent.TimeUnit; // ...added import for deadlines
 public class StubManager {
     private static final Logger logger = LogManager.getLogger(StubManager.class);
     private static volatile ChannelManager channelManager; // As already designed, keyed by Integer nodeId
-    private static final int POOL_SIZE = 4;
+    private static final int POOL_SIZE = 2;
 
     private final int serverIdToExclude;
-    private final ExecutorService networkExecutor;
 
     // Future stub pools for each service
     private static final Map<Integer, CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceFutureStub>> cliStubs = new ConcurrentHashMap<>();
@@ -44,21 +43,34 @@ public class StubManager {
     private static final Map<Integer, CopyOnWriteArrayList<ClientServiceGrpc.ClientServiceBlockingStub>> clientBlockingStubs = new ConcurrentHashMap<>();
     private static final Map<Integer, CopyOnWriteArrayList<TPCServiceGrpc.TPCServiceBlockingStub>> tpcBlockingStubs = new ConcurrentHashMap<>();
 
-    public StubManager(int serverIdToExclude, ExecutorService networkExecutor) {
+    public StubManager(int serverIdToExclude) {
         this.serverIdToExclude = serverIdToExclude;
-        this.networkExecutor = networkExecutor;
         initChannelManager();
         preCreateStubs();
     }
 
-    //too many pings?
-
     private synchronized void initChannelManager() {
-        if (channelManager == null)
-            channelManager = new ChannelManager(POOL_SIZE, this.serverIdToExclude);
+        if (channelManager != null) {
+            channelManager.shutdownChannels();
+        }
+        channelManager = new ChannelManager(POOL_SIZE, this.serverIdToExclude);
     }
 
     private void preCreateStubs() {
+
+        cliStubs.clear();
+        paxosStubs.clear();
+        clientStubs.clear();
+        tpcStubs.clear();
+        cliBlockingStubs.clear();
+        paxosBlockingStubs.clear();
+        clientBlockingStubs.clear();
+        tpcBlockingStubs.clear();
+        cliAsyncStubs.clear();
+        paxosAsyncStubs.clear();
+        clientAsyncStubs.clear();
+        tpcAsyncStubs.clear();
+
         for (Integer nodeId : channelManager.getNodes().keySet()) {
             CopyOnWriteArrayList<CLIServiceGrpc.CLIServiceFutureStub> cliStubPool = new CopyOnWriteArrayList<>();
             CopyOnWriteArrayList<PaxosServiceGrpc.PaxosServiceFutureStub> paxosStubPool = new CopyOnWriteArrayList<>();
@@ -674,6 +686,4 @@ public class StubManager {
             }
         }
     }
-
-    // Add future/async stub pools and accessors as needed
 }

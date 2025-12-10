@@ -1,22 +1,19 @@
 package org.example.messaging;
 
-import io.grpc.Server;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.*;
 import org.example.config.Config;
-import org.example.state.Ballot;
 
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.TimeUnit;
 
 public class PaxosMessageSender extends MessageSender {
 
     private static final Logger logger = LogManager.getLogger(PaxosMessageSender.class);
 
     public PaxosMessageSender(int nodeId, ExecutorService networkExecutor) {
-        super(nodeId, networkExecutor);
+        super(nodeId);
     }
 
     public void forwardClientRequest(int targetNodeId, ServerMessage<ClientRequest> message) {

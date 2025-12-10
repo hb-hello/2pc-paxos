@@ -73,8 +73,8 @@ public class ClientRequestHandler {
                     int otherClusterIndex = OperationHelper.resolveOtherClusterIndex(serverId, request.payload().getOperation(), accountIdToClusterMap);
                     clientRequestTracker.addRequest(request, executionMode, otherClusterIndex);
                     logger.info("Added client request {} to tracker as non-leader with execution mode {} and otherClusterIndex {}", request.getMessageId(), executionMode.name(), otherClusterIndex);
+                    paxosServer.handleClientRequestAsNonLeader(request);
                 }
-                paxosServer.handleClientRequestAsNonLeader(request);
             }
 
         } else executeReadOnlyAndReply(request);

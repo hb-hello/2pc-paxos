@@ -9,18 +9,22 @@ public class ExecutorManager {
 
     private static final Logger logger = LogManager.getLogger(ExecutorManager.class);
 
+    // Best practice: 2x CPU cores for mixed I/O and CPU-bound tasks
+    private static final int MAX_THREADS = Runtime.getRuntime().availableProcessors() * 2;
+    private static final int QUEUE_CAPACITY = 65_536; // 64K
+
     private final ExecutorService stateExecutor;
     private final ExecutorService stateMachineExecutor;
     private final ExecutorService networkExecutor;
-    private final ExecutorService streamingExecutor;
     private final ExecutorService messageExecutor;
+    private final ExecutorService grpcExecutor;
     private final ExecutorService listeningExecutor;
     private final ScheduledExecutorService timerExecutor;
     private final ScheduledExecutorService retryExecutor;
 
 
 
-    public ExecutorManager(int otherServerCount) {
+    public ExecutorManager() {
 
         // State management: Single-threaded to avoid race conditions on state mutations
         this.stateExecutor = Executors.newSingleThreadExecutor(createNamedThreadFactory("state-manager"));
@@ -36,15 +40,26 @@ public class ExecutorManager {
                 createNamedThreadFactory("network-io")
         );
 
-        // Streaming operations: Fixed thread pool for long-running streaming RPCs
-        // Sized for concurrent NewView operations to all servers
-        this.streamingExecutor = Executors.newFixedThreadPool(
-                Math.max(5, otherServerCount),
-                createNamedThreadFactory("streaming-io")
+        // Message processing: Fixed thread pool with bounded queue to prevent resource exhaustion
+        // CallerRunsPolicy provides backpressure when queue is full
+        this.messageExecutor = new ThreadPoolExecutor(
+                MAX_THREADS,
+                MAX_THREADS,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(QUEUE_CAPACITY),
+                createNamedThreadFactory("message-processor"),
+                new ThreadPoolExecutor.CallerRunsPolicy()
         );
 
-        // Message processing: Cached thread pool that can scale with incoming message load
-        this.messageExecutor = Executors.newCachedThreadPool(createNamedThreadFactory("message-processor"));
+        // gRPC executor: Bounded configuration for gRPC server/channel operations
+        this.grpcExecutor = new ThreadPoolExecutor(
+                MAX_THREADS,
+                MAX_THREADS,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(QUEUE_CAPACITY),
+                createNamedThreadFactory("grpc-executor"),
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
 
         // Executor for listening to incoming messages - for use with grpc server
         this.listeningExecutor = Executors.newSingleThreadExecutor(createNamedThreadFactory("grpc-listener"));
@@ -75,6 +90,14 @@ public class ExecutorManager {
         return retryExecutor;
     }
 
+    public ExecutorService getGrpcExecutor() {
+        return grpcExecutor;
+    }
+
+    public ExecutorService getMessageExecutor() {
+        return messageExecutor;
+    }
+
     public void submitStateTransition(Runnable task) {
         stateExecutor.submit(task);
     }
@@ -87,10 +110,6 @@ public class ExecutorManager {
         return networkExecutor.submit(task);
     }
 
-    public void submitStreamingIO(Runnable task) {
-        streamingExecutor.submit(task);
-    }
-
     public void submitMessageProcessing(Runnable task) {
         messageExecutor.submit(task);
     }
@@ -101,8 +120,8 @@ public class ExecutorManager {
 
     public void shutdown() {
         shutdownExecutor(networkExecutor, "Network");
-        shutdownExecutor(streamingExecutor, "Streaming");
         shutdownExecutor(messageExecutor, "Message");
+        shutdownExecutor(grpcExecutor, "gRPC");
         shutdownExecutor(stateMachineExecutor, "Log");
         shutdownExecutor(stateExecutor, "State");
         shutdownExecutor(listeningExecutor, "Listening");

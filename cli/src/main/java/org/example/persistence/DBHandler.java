@@ -4,6 +4,11 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.config.Config;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Comparator;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.List;
@@ -11,6 +16,7 @@ import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.stream.Stream;
 
 public class DBHandler {
     private static final Logger logger = LogManager.getLogger(DBHandler.class);
@@ -30,7 +36,28 @@ public class DBHandler {
         initialize();
     }
 
+    private void clearDataDirectory() {
+        Path dataDir = Paths.get("data");
+        if (!Files.exists(dataDir)) {
+            return;
+        }
+        try (Stream<Path> walk = Files.walk(dataDir)) {
+            walk.sorted(Comparator.reverseOrder())
+                .filter(path -> !path.equals(dataDir))
+                .forEach(path -> {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (IOException e) {
+                        throw new RuntimeException("Failed to delete " + path, e);
+                    }
+                });
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to clear data directory", e);
+        }
+    }
+
     private Map<Integer, Map<Integer, KeyValueStore<Double>>> createDBs() {
+        clearDataDirectory();
         Map<Integer, Map<Integer, KeyValueStore<Double>>> dbs = new HashMap<>();
         int clusterCount = Config.getServerClusterCount();
         int clusterSize = Config.getServerClusterSize();
@@ -44,6 +71,7 @@ public class DBHandler {
                     clusterMap.put(nodeId, store);
                 }
             }
+            logger.info("Created databases for {} clusters with {} nodes each.", clusterCount, clusterSize);
             return dbs;
         } catch (Exception e) {
             throw new RuntimeException(e);
@@ -62,6 +90,8 @@ public class DBHandler {
         try {
             logger.info("Initializing databases with {} accounts across {} clusters ({} accounts per cluster)",
                     databaseSize, clusterCount, perClusterDBSize);
+            System.out.println("Initializing databases with " + databaseSize + " accounts across " +
+                    clusterCount + " clusters (" + perClusterDBSize + " accounts per cluster)");
             for (int accountId = 1; accountId <= databaseSize; accountId++) {
                 int clusterIndex = (accountId - 1) / perClusterDBSize;
 

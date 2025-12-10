@@ -8,7 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class ServerManager {
-    private static final List<Process> processes = new ArrayList<>();
+    private static List<Process> processes = new ArrayList<>();
 
     public static void startAllServers(String jarPath, int numServers) throws IOException {
         Path jar = Paths.get(jarPath);
@@ -19,7 +19,7 @@ public class ServerManager {
             throw new IOException("Server executable jar not found: " + jar);
         }
 
-        System.out.println("Launching servers using jar: " + jar);
+//        System.out.println("Launching servers using jar: " + jar);
 
         for (int i = 1; i <= numServers; i++) {
             ProcessBuilder pb = new ProcessBuilder(
@@ -35,6 +35,7 @@ public class ServerManager {
                     "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
                     "--add-opens=java.base/java.io=ALL-UNNAMED",
                     "--add-opens=java.base/java.util=ALL-UNNAMED",
+                    "-Xmx2g",
                     "-jar",
                     jar.toString(),
                     String.valueOf(i)
@@ -68,5 +69,6 @@ public class ServerManager {
             }
         }
         processes.clear();
+        processes = new ArrayList<>();
     }
 }

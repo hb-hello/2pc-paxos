@@ -146,7 +146,7 @@ public class StateMachineOperator {
 
             // Nothing more requested to be executed.
             if (current > limit) {
-                logger.info("Execution loop ending: current {} > limit {}", current, limit);
+//                logger.info("Execution loop ending: current {} > limit {}", current, limit);
                 return;
             }
             ServerMessage<ClientRequest> requestMessage = operationLog.getRequest(current);
