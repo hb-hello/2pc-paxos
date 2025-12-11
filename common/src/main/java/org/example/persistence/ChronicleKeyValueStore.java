@@ -8,7 +8,6 @@ import org.apache.logging.log4j.Logger;
 import java.io.File;
 import java.io.IOException;
 import java.util.Map;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
@@ -18,6 +17,7 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
     private final Class<T> valueClass;
     private ChronicleMap<Integer, T> map;
     private ChronicleMap<Integer, Integer> clusterIdMap;
+    private ChronicleMap<CharSequence, Double> walMap;
 
     public ChronicleKeyValueStore(int nodeId, Class<T> valueClass) {
         this.nodeId = nodeId;
@@ -32,6 +32,7 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
     private void build() throws IOException {
         File file = new File("data/balances-node-" + nodeId + ".dat");
         File clusterFile = new File("data/cluster-map-node-" + nodeId + ".dat");
+        File walFile = new File("data/wal-node-" + nodeId + ".dat");
 
         ChronicleMapBuilder<Integer, T> builder = ChronicleMapBuilder
                 .of(Integer.class, valueClass)
@@ -46,6 +47,12 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
                 .entries(10_000)
                 .constantKeySizeBySample(0)
                 .constantValueSizeBySample(0);
+        ChronicleMapBuilder<CharSequence, Double> walBuilder = ChronicleMapBuilder
+                .of(CharSequence.class, Double.class)
+                .name("wal-store-node-" + nodeId)
+                .entries(10_000)
+                .averageKeySize(32)
+                .constantValueSizeBySample(10.0);
 
         if (!file.exists()) {
             file.getParentFile().mkdirs();
@@ -55,9 +62,14 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
             clusterFile.getParentFile().mkdirs();
             clusterFile.createNewFile();
         }
+        if (!walFile.exists()) {
+            walFile.getParentFile().mkdirs();
+            walFile.createNewFile();
+        }
 
         this.map = builder.createPersistedTo(file);
         this.clusterIdMap = clusterBuilder.createPersistedTo(clusterFile);
+        this.walMap = walBuilder.createPersistedTo(walFile);
     }
 
     @Override
@@ -112,6 +124,13 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
             }
         } catch (Exception e) {
             logger.warn("Error closing Chronicle cluster map for node {}: {}", nodeId, e.getMessage());
+        }
+        try {
+            if (walMap != null) {
+                walMap.close();
+            }
+        } catch (Exception e) {
+            logger.warn("Error closing Chronicle WAL map for node {}: {}", nodeId, e.getMessage());
         }
     }
 
@@ -188,5 +207,33 @@ public class ChronicleKeyValueStore<T> implements KeyValueStore<T> {
     public Map<Integer, Integer> getAllClusterIds() {
         return clusterIdMap.entrySet().stream()
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
+    @Override
+    public void putWalEntry(String compositeKey, Double beforeBalance) {
+        try {
+            walMap.put(compositeKey, beforeBalance);
+        } catch (Exception e) {
+            logger.error("Error putting WAL entry {} into Chronicle map: {}", compositeKey, e.getMessage());
+        }
+    }
+
+    @Override
+    public Double getWalEntry(String compositeKey) {
+        try {
+            return walMap.get(compositeKey);
+        } catch (Exception e) {
+            logger.error("Error getting WAL entry {} from Chronicle map: {}", compositeKey, e.getMessage());
+            return null;
+        }
+    }
+
+    @Override
+    public void deleteWalEntry(String compositeKey) {
+        try {
+            walMap.remove(compositeKey);
+        } catch (Exception e) {
+            logger.error("Error deleting WAL entry {} from Chronicle map: {}", compositeKey, e.getMessage());
+        }
     }
 }

@@ -11,6 +11,10 @@ public interface StateMachine {
      */
     OperationResult execute(Operation operation, ExecutionMode mode);
 
+    void recordWalEntry(String compositeKey, double beforeBalance);
+    Double readWalEntry(String compositeKey);
+    void deleteWalEntry(String compositeKey);
+
     /**
      * Consistent snapshot of application state for CLI/inspection.
      */

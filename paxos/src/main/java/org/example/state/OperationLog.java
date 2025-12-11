@@ -286,7 +286,7 @@ public class OperationLog {
         return promiseBuilder.build();
     }
 
-    public NewViewMessage getNewViewMessageWithLogs() {
+    public NewViewMessage getNewViewMessageWithLogs(Ballot currentBallot) {
 
         NewViewMessage.Builder newViewBuilder = NewViewMessage.newBuilder();
 
@@ -298,7 +298,7 @@ public class OperationLog {
             ClientRequest request = entry.request().payload();
             if (status == OperationStatus.ACCEPTED) {
                 AcceptMessage message = AcceptMessage.newBuilder()
-                        .setBallot(ballot)
+                        .setBallot(currentBallot.toProto())
                         .setPhase(phase)
                         .setRequest(request)
                         .setSequenceNumber(i)
@@ -306,7 +306,7 @@ public class OperationLog {
                 newViewBuilder.addAcceptLog(message);
             } else if (status == OperationStatus.COMMITTED || status == OperationStatus.EXECUTED) {
                 CommitMessage message = CommitMessage.newBuilder()
-                        .setBallot(ballot)
+                        .setBallot(currentBallot.toProto())
                         .setPhase(phase)
                         .setRequest(request)
                         .setSequenceNumber(i)

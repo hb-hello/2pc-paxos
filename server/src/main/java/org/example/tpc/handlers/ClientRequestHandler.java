@@ -76,7 +76,6 @@ public class ClientRequestHandler {
                     paxosServer.handleClientRequestAsNonLeader(request);
                 }
             }
-
         } else {
             logger.info("Handling read-only client request {} directly.", request.getMessageId());
             executeReadOnlyAndReply(request);

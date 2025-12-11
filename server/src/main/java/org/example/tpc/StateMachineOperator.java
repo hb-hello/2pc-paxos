@@ -186,6 +186,8 @@ public class StateMachineOperator {
             }
 
             if (status == OperationStatus.EXECUTED) {
+                logger.info("Skipping execution for seq {} request {} as it is already EXECUTED.",
+                        current, requestId);
                 nextToExecute.incrementAndGet();
                 continue;
             }
@@ -204,7 +206,7 @@ public class StateMachineOperator {
 
             ExecutionMode mode = requestTracker.getExecutionMode(requestId);
 
-            WalEntry walEntry = buildWalEntry(request, mode);
+            WalEntry walEntry = buildWalEntry(request, mode, requestId);
             if (walEntry != null) {
                 wal.put(requestId, walEntry);
             }
@@ -231,16 +233,14 @@ public class StateMachineOperator {
                 requestTracker.setReply(requestMessage, replyMessage);
             }
 
-            boolean markedInLog = operationLog.compareAndSetStatus(
-                    current, OperationStatus.COMMITTED, OperationStatus.EXECUTED);
+            boolean markedInLog = operationLog.advanceStatus(current, OperationStatus.EXECUTED);
 
             logger.info("Marked seq {} request {} as EXECUTED in log: {}",
                     current, requestId, markedInLog);
 
             if (!markedInLog) {
-                logger.error("Failed to mark seq {} request {} as EXECUTED in operation log",
-                        current, requestId);
-                return;
+                logger.info("Failed to mark seq {} request {} as EXECUTED in log - current status: {}",
+                        current, requestId, operationLog.getStatus(current));
             }
 
             nextToExecute.incrementAndGet();
@@ -273,30 +273,20 @@ public class StateMachineOperator {
      * For non-read-only operations, capture the pre-operation balances of all
      * accounts that may be mutated, as a before-image.
      */
-    private WalEntry buildWalEntry(ClientRequest request, ExecutionMode mode) {
+    private WalEntry buildWalEntry(ClientRequest request, ExecutionMode mode, String requestId) {
         Operation op = request.getOperation();
-        switch (op.getOpCase()) {
-            case TRANSFER -> {
-                int sender = op.getTransfer().getSender();
-                int receiver = op.getTransfer().getReceiver();
-                Map<Integer, Double> before = new HashMap<>(2);
-                if (mode == ExecutionMode.BOTH || mode == ExecutionMode.SENDER) {
-                    before.put(sender, stateMachineBalance(sender));
-                }
-                if (mode == ExecutionMode.BOTH || mode == ExecutionMode.RECEIVER) {
-                    before.put(receiver, stateMachineBalance(receiver));
-                }
-                if (before.isEmpty()) {
-                    return null;
-                }
-                return new WalEntry(before);
-            }
-            case BALANCE_REQUEST -> {
-                return null;
-            }
-            case OP_NOT_SET -> throw new IllegalArgumentException("Operation.op not set");
+        int[] accountIds = OperationHelper.resolveAccountIds(op, mode);
+        if (accountIds.length == 0) {
+            return null;
         }
-        throw new IllegalStateException("Unhandled opCase: " + op.getOpCase());
+        Map<Integer, Double> before = new HashMap<>(accountIds.length);
+        for (int accountId : accountIds) {
+            double balance = stateMachineBalance(accountId);
+            before.put(accountId, balance);
+            String compositeKey = requestId + ":" + accountId;
+            stateMachine.recordWalEntry(compositeKey, balance);
+        }
+        return new WalEntry(before);
     }
 
     // Helper to reuse the same lookup path BankStateMachine uses.
@@ -324,6 +314,7 @@ public class StateMachineOperator {
                         int accountId = e.getKey();
                         double balance = e.getValue();
                         stateMachine.restoreBalance(accountId, balance);
+                        stateMachine.deleteWalEntry(requestId + ":" + accountId);
                     }
                 }
                 committedOrAborted.put(requestId, true);
@@ -349,6 +340,8 @@ public class StateMachineOperator {
                 WalEntry entry = wal.remove(requestId);
                 if (entry != null) {
                     entry.markCommittedOrAborted();
+                    entry.beforeBalances().keySet().forEach(accountId ->
+                            stateMachine.deleteWalEntry(requestId + ":" + accountId));
                 }
                 f.complete(null);
             } catch (Throwable t) {

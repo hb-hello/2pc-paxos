@@ -277,7 +277,7 @@ public class PaxosState {
     }
 
     public NewViewMessage getNewView() {
-        return operationLog.getNewViewMessageWithLogs().toBuilder().setBallot(ballot.toProto()).build();
+        return operationLog.getNewViewMessageWithLogs(ballot).toBuilder().setBallot(ballot.toProto()).build();
     }
 
     public String printOperationLog() {

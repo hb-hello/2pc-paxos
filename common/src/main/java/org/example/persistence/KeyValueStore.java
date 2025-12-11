@@ -1,6 +1,5 @@
 package org.example.persistence;
 
-import java.util.List;
 import java.util.Map;
 
 public interface KeyValueStore<T> {
@@ -14,4 +13,8 @@ public interface KeyValueStore<T> {
     Integer getClusterId(int key);
     void deleteClusterId(int key);
     Map<Integer, Integer> getAllClusterIds();
+
+    void putWalEntry(String compositeKey, Double beforeBalance);
+    Double getWalEntry(String compositeKey);
+    void deleteWalEntry(String compositeKey);
 }

@@ -27,7 +27,7 @@ public class TPCMessageSender extends MessageSender {
         ensureActive();
         logger.info("Broadcasting TPC Prepare to cluster of node {} : {}", targetNodeId, prepare);
         for (int nodeId : Config.getServerIdsInCluster(Config.getServerClusterIndex(targetNodeId))) {
-            stubManager.getTPCStub(targetNodeId).tPCPrepare(prepare.payload());
+            stubManager.getTPCStub(nodeId).tPCPrepare(prepare.payload());
         }
     }
 

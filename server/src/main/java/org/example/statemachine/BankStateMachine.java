@@ -190,4 +190,19 @@ public final class BankStateMachine implements StateMachine {
 //        logger.info("RESET: Clearing balances and restoring initial state");
         modifiedBalances.clear();
     }
+
+    @Override
+    public void recordWalEntry(String compositeKey, double beforeBalance) {
+        database.putWalEntry(compositeKey, beforeBalance);
+    }
+
+    @Override
+    public Double readWalEntry(String compositeKey) {
+        return database.getWalEntry(compositeKey);
+    }
+
+    @Override
+    public void deleteWalEntry(String compositeKey) {
+        database.deleteWalEntry(compositeKey);
+    }
 }
