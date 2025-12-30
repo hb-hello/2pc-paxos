@@ -65,3 +65,10 @@ ________
 - There are more data structure optimisations I could make in places
 - Would like to allow multiple levels of consistency, similar to Cassandra / MongoDB
 - Could push for higher throughout for cross-shard transactions.
+d 
+
+**Benchmarking stats** showing throughput and latency across different contention levels in transactions - Got to an average of ~5000 intra-shard transactions per second
+
+<img width="800" height="600" alt="Chart showing throughput across different contention levels" src="https://github.com/user-attachments/assets/b3cc0e21-63fd-4b8c-8085-ccea7cebe310" />
+
+<img width="800" height="600" alt="Chart showing latency (min, max and avg) across different contention levels" src="https://github.com/user-attachments/assets/c0007f99-31f9-4b49-8310-cfa3581a2d6f" />
